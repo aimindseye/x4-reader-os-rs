@@ -20,14 +20,7 @@ nb  = "1.1.0"
 log = "0.4.27"
 esp-alloc = { version = "0.9.0", features = ["internal-heap-stats"] }
 
-[package]
-edition      = "2024"
-name         = "pulp-os"
-rust-version = "1.88"
-version      = "0.1.0"
-authors      = ["Hans Martin <https://github.com/hansmrtn>"]
-repository   = "https://github.com/hansmrtn/pulp-os"
-license      = "MIT"
+
 
 [[bin]]
 name = "pulp-os"
