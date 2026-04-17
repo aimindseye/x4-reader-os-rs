@@ -67,8 +67,6 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     // reclaim ~64 KB from 2nd-stage bootloader; net heap ~172 KB
     esp_alloc::heap_allocator!(#[ram(reclaimed)] size: 64_000);
 
-    // Commit 3 thin hook: prove the root runtime can see the new app shell
-    // without changing the existing board/input/storage/display flow.
     let app_shell = AppShell::new();
     info!("app shell initialised: {:?}", app_shell.screen());
 
@@ -76,7 +74,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     console.push("pulp-os 0.1.0");
     console.push("esp32c3 rv32imc 160mhz");
     console.push("heap: 172K (108K + 64K reclaimed)");
-    console.push("app shell: commit-2 scaffold loaded");
+    console.push("app shell: home/browser/reader scaffold");
 
     info!("booting...");
 
@@ -147,9 +145,15 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
         FILES.init(FilesApp::new()),
         READER.take(),
         SETTINGS.init(SettingsApp::new()),
+        app_shell,
         QUICK_MENU.take(),
         BUMPS.take(),
         ButtonMapper::new(),
+    );
+
+    info!(
+        "app shell bound into app manager: {:?}",
+        app_mgr.app_shell().screen()
     );
 
     console.push("kernel: constructed");

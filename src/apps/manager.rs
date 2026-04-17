@@ -9,6 +9,7 @@ use crate::apps::home::HomeApp;
 use crate::apps::reader::ReaderApp;
 use crate::apps::settings::SettingsApp;
 use crate::apps::{App, AppContext, AppId, Launcher, PendingSetting, Redraw, Transition};
+use crate::app::{AppScreen, AppShell};
 use esp_hal::delay::Delay;
 
 use crate::apps::widgets::quick_menu::{MAX_APP_ACTIONS, QuickMenuResult};
@@ -92,6 +93,8 @@ pub struct AppManager {
     pub reader: &'static mut ReaderApp,
     pub settings: &'static mut SettingsApp,
 
+    pub app_shell: AppShell,
+
     pub quick_menu: &'static mut QuickMenu,
     pub bumps: &'static mut ButtonFeedback,
 
@@ -106,25 +109,49 @@ impl AppManager {
         files: &'static mut FilesApp,
         reader: &'static mut ReaderApp,
         settings: &'static mut SettingsApp,
+        app_shell: AppShell,
         quick_menu: &'static mut QuickMenu,
         bumps: &'static mut ButtonFeedback,
         mapper: ButtonMapper,
     ) -> Self {
-        Self {
+        let mut this = Self {
             launcher,
             home,
             files,
             reader,
             settings,
+            app_shell,
             quick_menu,
             bumps,
             mapper,
-        }
+        };
+        this.sync_shell_from_active();
+        this
     }
 
     #[inline]
     pub fn active(&self) -> AppId {
         self.launcher.active()
+    }
+
+    #[inline]
+    pub fn app_shell(&self) -> &AppShell {
+        &self.app_shell
+    }
+
+    #[inline]
+    pub fn app_shell_mut(&mut self) -> &mut AppShell {
+        &mut self.app_shell
+    }
+
+    pub fn sync_shell_from_active(&mut self) {
+        let next = match self.launcher.active() {
+            AppId::Home => AppScreen::Home,
+            AppId::Files => AppScreen::Browser,
+            AppId::Reader => AppScreen::Reader,
+            AppId::Settings | AppId::Upload => self.app_shell.screen(),
+        };
+        self.app_shell.set_screen(next);
     }
 
     #[inline]
@@ -184,6 +211,7 @@ impl AppManager {
 
     pub fn enter_initial(&mut self, k: &mut KernelHandle<'_>) {
         self.home.on_enter(&mut self.launcher.ctx, k);
+        self.sync_shell_from_active();
     }
 
     // collect session state to RTC memory struct before sleep
@@ -470,6 +498,8 @@ impl AppManager {
             } else {
                 self.launcher.ctx.request_full_redraw();
             }
+
+            self.sync_shell_from_active();
         }
     }
 

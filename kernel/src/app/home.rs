@@ -8,7 +8,7 @@ impl HomeState {
         Self
     }
 
-    pub fn selected<'a>(&self, shell: &'a AppShell) -> HomeMenuItem {
+    pub fn selected(&self, shell: &AppShell) -> HomeMenuItem {
         shell.home_item()
     }
 
