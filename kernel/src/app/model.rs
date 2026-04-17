@@ -106,6 +106,7 @@ impl ReaderSession {
 #[derive(Clone, Debug, Default)]
 pub struct AppShell {
     screen: Option<AppScreen>,
+    continue_target: Option<String>,
     home_items: Vec<HomeMenuItem>,
     home_selected: usize,
     browser_path: String,
@@ -120,6 +121,7 @@ impl AppShell {
     pub fn new() -> Self {
         Self {
             screen: Some(AppScreen::Home),
+            continue_target: None,
             home_items: Vec::new(),
             home_selected: 0,
             browser_path: String::new(),
@@ -137,6 +139,18 @@ impl AppShell {
 
     pub fn set_screen(&mut self, screen: AppScreen) {
         self.screen = Some(screen);
+    }
+
+    pub fn continue_target(&self) -> Option<&str> {
+        self.continue_target.as_deref()
+    }
+
+    pub fn set_continue_target(&mut self, path: impl Into<String>) {
+        self.continue_target = Some(path.into());
+    }
+
+    pub fn clear_continue_target(&mut self) {
+        self.continue_target = None;
     }
 
     pub fn home_items(&self) -> &[HomeMenuItem] {
@@ -209,11 +223,15 @@ impl AppShell {
 
 
     pub fn begin_reader_handoff(&mut self, book_path: impl Into<String>, is_epub: bool) {
+        let book_path = book_path.into();
+        self.continue_target = Some(book_path.clone());
         self.reader_session = Some(ReaderSession::pending(book_path, is_epub));
         self.screen = Some(AppScreen::Reader);
     }
 
     pub fn update_reader_progress(&mut self, book_path: impl Into<String>, current_page: u32, chapter: u16, is_epub: bool) {
+        let book_path = book_path.into();
+        self.continue_target = Some(book_path.clone());
         self.reader_session = Some(ReaderSession::new(book_path, current_page, chapter, is_epub));
         self.screen = Some(AppScreen::Reader);
     }

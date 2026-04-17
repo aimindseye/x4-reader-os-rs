@@ -183,6 +183,19 @@ impl HomeApp {
         self.recent_book_len > 0
     }
 
+    pub fn recent_book_bytes(&self) -> Option<&[u8]> {
+        if self.recent_book_len > 0 {
+            Some(&self.recent_book[..self.recent_book_len])
+        } else {
+            None
+        }
+    }
+
+    pub fn recent_book_str(&self) -> Option<&str> {
+        self.recent_book_bytes()
+            .and_then(|bytes| core::str::from_utf8(bytes).ok())
+            .filter(|s| !s.is_empty())
+    }
 
     pub fn shell_menu_items(&self) -> Vec<HomeMenuItem> {
         let mut items = Vec::with_capacity(self.item_count);

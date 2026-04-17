@@ -154,6 +154,12 @@ impl AppManager {
     fn sync_shell_home(&mut self) {
         self.app_shell
             .set_home(self.home.shell_menu_items(), self.home.selected());
+
+        if let Some(path) = self.home.recent_book_str() {
+            self.app_shell.set_continue_target(path);
+        } else {
+            self.app_shell.clear_continue_target();
+        }
     }
 
     fn sync_shell_files(&mut self) {
@@ -185,6 +191,13 @@ impl AppManager {
             let is_epub = matches!(entry.kind, crate::app::BrowserEntryKind::File)
                 && entry.name.as_bytes().ends_with(b".epub");
             self.app_shell.begin_reader_handoff(entry.name, is_epub);
+        }
+    }
+
+    fn seed_reader_handoff_from_home(&mut self) {
+        if let Some(path) = self.home.recent_book_str() {
+            let is_epub = path.as_bytes().ends_with(b".epub");
+            self.app_shell.begin_reader_handoff(path, is_epub);
         }
     }
 
@@ -525,8 +538,12 @@ impl AppManager {
             self.propagate_fonts();
             self.launcher.ctx.clear_loading();
 
-            if nav.to == AppId::Reader && nav.from == AppId::Files {
-                self.seed_reader_handoff_from_files();
+            if nav.to == AppId::Reader {
+                match nav.from {
+                    AppId::Files => self.seed_reader_handoff_from_files(),
+                    AppId::Home => self.seed_reader_handoff_from_home(),
+                    _ => {}
+                }
             }
 
             if nav.to != AppId::Upload {
