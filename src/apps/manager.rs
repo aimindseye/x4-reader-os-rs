@@ -9,7 +9,7 @@ use crate::apps::home::HomeApp;
 use crate::apps::reader::ReaderApp;
 use crate::apps::settings::SettingsApp;
 use crate::apps::{App, AppContext, AppId, Launcher, PendingSetting, Redraw, Transition};
-use crate::app::{AppScreen, AppShell};
+use crate::app::{AppScreen, AppShell, ReaderSession};
 use esp_hal::delay::Delay;
 
 use crate::apps::widgets::quick_menu::{MAX_APP_ACTIONS, QuickMenuResult};
@@ -125,7 +125,7 @@ impl AppManager {
             bumps,
             mapper,
         };
-        this.sync_shell_from_active();
+        this.sync_shell_from_runtime();
         this
     }
 
@@ -142,6 +142,42 @@ impl AppManager {
     #[inline]
     pub fn app_shell_mut(&mut self) -> &mut AppShell {
         &mut self.app_shell
+    }
+
+    pub fn sync_shell_from_runtime(&mut self) {
+        self.sync_shell_home();
+        self.sync_shell_files();
+        self.sync_shell_reader();
+        self.sync_shell_from_active();
+    }
+
+    fn sync_shell_home(&mut self) {
+        self.app_shell
+            .set_home(self.home.shell_menu_items(), self.home.selected());
+    }
+
+    fn sync_shell_files(&mut self) {
+        self.app_shell.set_browser_state(
+            "/",
+            self.files.scroll(),
+            self.files.selected(),
+            self.files.total(),
+            self.files.shell_entries(),
+        );
+    }
+
+    fn sync_shell_reader(&mut self) {
+        let filename = core::str::from_utf8(self.reader.filename_bytes()).unwrap_or("");
+        if filename.is_empty() {
+            self.app_shell.clear_reader_session();
+        } else {
+            self.app_shell.set_reader_session(ReaderSession::new(
+                filename,
+                self.reader.page() as u32,
+                self.reader.chapter(),
+                self.reader.is_epub(),
+            ));
+        }
     }
 
     pub fn sync_shell_from_active(&mut self) {
@@ -207,11 +243,12 @@ impl AppManager {
 
     pub fn load_home_recent(&mut self, k: &mut KernelHandle<'_>) {
         self.home.load_recent(k);
+        self.sync_shell_home();
     }
 
     pub fn enter_initial(&mut self, k: &mut KernelHandle<'_>) {
         self.home.on_enter(&mut self.launcher.ctx, k);
-        self.sync_shell_from_active();
+        self.sync_shell_from_runtime();
     }
 
     // collect session state to RTC memory struct before sleep
@@ -386,22 +423,23 @@ impl AppManager {
     pub fn dispatch_event(&mut self, hw_event: Event, bm_cache: &mut BookmarkCache) -> Transition {
         let event = self.mapper.map_event(hw_event);
 
-        if self.quick_menu.open {
-            return self.handle_quick_menu(event, bm_cache);
-        }
-
-        if matches!(event, ActionEvent::Press(Action::Menu)) {
+        let transition = if self.quick_menu.open {
+            self.handle_quick_menu(event, bm_cache)
+        } else if matches!(event, ActionEvent::Press(Action::Menu)) {
             let active = self.launcher.active();
             let actions: &[_] = with_app!(active, self, |app| app.quick_actions());
             self.quick_menu.show(actions);
             self.launcher.ctx.mark_dirty(self.quick_menu.region());
-            return Transition::None;
-        }
+            Transition::None
+        } else {
+            let active = self.launcher.active();
+            with_app!(active, self, |app| {
+                app.on_event(event, &mut self.launcher.ctx)
+            })
+        };
 
-        let active = self.launcher.active();
-        with_app!(active, self, |app| {
-            app.on_event(event, &mut self.launcher.ctx)
-        })
+        self.sync_shell_from_runtime();
+        transition
     }
 
     fn handle_quick_menu(
@@ -499,7 +537,7 @@ impl AppManager {
                 self.launcher.ctx.request_full_redraw();
             }
 
-            self.sync_shell_from_active();
+            self.sync_shell_from_runtime();
         }
     }
 
@@ -521,6 +559,10 @@ impl AppManager {
 
         // sync button configuration from settings (may have changed)
         self.sync_button_config();
+
+        // Thin polish: refresh shell mirrors after app background work has
+        // loaded recent books, file pages, or reader position.
+        self.sync_shell_from_runtime();
     }
 
     pub fn draw(&self, strip: &mut StripBuffer) {

@@ -1,7 +1,9 @@
 // launcher screen: menu, bookmarks browser
 
+use alloc::vec::Vec;
 use core::fmt::Write as _;
 
+use crate::app::HomeMenuItem;
 use crate::apps::{App, AppContext, AppId, RECENT_FILE, Transition};
 use crate::board::action::{Action, ActionEvent};
 use crate::board::{SCREEN_H, SCREEN_W};
@@ -179,6 +181,19 @@ impl HomeApp {
 
     fn has_recent(&self) -> bool {
         self.recent_book_len > 0
+    }
+
+
+    pub fn shell_menu_items(&self) -> Vec<HomeMenuItem> {
+        let mut items = Vec::with_capacity(self.item_count);
+        if self.has_recent() {
+            items.push(HomeMenuItem::ContinueReading);
+        }
+        items.push(HomeMenuItem::FileBrowser);
+        items.push(HomeMenuItem::Bookmarks);
+        items.push(HomeMenuItem::Settings);
+        items.push(HomeMenuItem::Upload);
+        items
     }
 
     fn item_label(&self, idx: usize) -> &str {

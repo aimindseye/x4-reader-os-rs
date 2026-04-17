@@ -8,6 +8,7 @@ use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::PrimitiveStyle;
 
+use crate::app::BrowserEntry;
 use crate::apps::{App, AppContext, AppId, Transition};
 use crate::board::action::{Action, ActionEvent};
 use crate::board::{SCREEN_H, SCREEN_W};
@@ -129,6 +130,20 @@ impl FilesApp {
     #[inline]
     pub fn total(&self) -> usize {
         self.total
+    }
+
+
+    pub fn shell_entries(&self) -> Vec<BrowserEntry> {
+        let mut out = Vec::with_capacity(self.count);
+        for entry in self.entries[..self.count].iter() {
+            let label = entry.display_name();
+            if entry.is_dir {
+                out.push(BrowserEntry::directory(label));
+            } else {
+                out.push(BrowserEntry::file(label));
+            }
+        }
+        out
     }
 
     pub fn restore_state(&mut self, scroll: usize, selected: usize, total: usize) {

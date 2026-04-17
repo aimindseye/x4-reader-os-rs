@@ -48,28 +48,25 @@ impl super::Kernel {
     }
 
     // one-time boot: load caches, settings, render the home screen
-    // if waking from deep sleep with valid RTC session, restore it
+    // Home-first flow: always enter Home on boot, even if an RTC session exists.
+    // We still log the retained session so resume can be reintroduced later
+    // without changing the sleep/save path.
     pub async fn boot<A: AppLayer>(&mut self, app_mgr: &mut A) {
         use super::rtc_session;
 
         self.bm_cache.ensure_loaded(&self.sd);
 
-        // check for valid RTC session before loading settings
-        // (session may contain cached settings to skip SD reads)
-        let has_rtc_session = rtc_session::is_valid_session();
-        let rtc_session_data = if has_rtc_session {
+        if rtc_session::is_valid_session() {
             let session = rtc_session::load();
             info!(
-                "boot: RTC session valid (wake count {})",
+                "boot: RTC session present (wake count {}), but Home-first flow skips auto-restore",
                 session.wake_count()
             );
-            Some(session)
         } else {
             info!("boot: no RTC session (power-on or first boot)");
-            None
-        };
+        }
 
-        // load settings - may use cached values from RTC session
+        // load settings and initial app data before entering Home
         {
             let mut handle = self.handle();
             app_mgr.load_eager_settings(&mut handle);
@@ -79,16 +76,8 @@ impl super::Kernel {
         tasks::set_idle_timeout(app_mgr.system_settings().sleep_timeout);
         self.log_stats();
 
-        // try to restore session from RTC memory
-        let restored = if let Some(session) = rtc_session_data {
-            app_mgr.apply_session(&session, &mut self.handle())
-        } else {
-            false
-        };
-
-        if !restored {
-            app_mgr.enter_initial(&mut self.handle());
-        }
+        // Explicit Home-first boot.
+        app_mgr.enter_initial(&mut self.handle());
 
         {
             let draw = |s: &mut StripBuffer| app_mgr.draw(s);
