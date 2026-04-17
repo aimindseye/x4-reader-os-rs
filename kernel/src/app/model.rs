@@ -78,6 +78,7 @@ pub struct ReaderSession {
     pub current_page: u32,
     pub chapter: u16,
     pub is_epub: bool,
+    pub handoff_pending: bool,
 }
 
 impl ReaderSession {
@@ -87,6 +88,17 @@ impl ReaderSession {
             current_page,
             chapter,
             is_epub,
+            handoff_pending: false,
+        }
+    }
+
+    pub fn pending(book_path: impl Into<String>, is_epub: bool) -> Self {
+        Self {
+            book_path: book_path.into(),
+            current_page: 0,
+            chapter: 0,
+            is_epub,
+            handoff_pending: true,
         }
     }
 }
@@ -194,4 +206,16 @@ impl AppShell {
     pub fn clear_reader_session(&mut self) {
         self.reader_session = None;
     }
+
+
+    pub fn begin_reader_handoff(&mut self, book_path: impl Into<String>, is_epub: bool) {
+        self.reader_session = Some(ReaderSession::pending(book_path, is_epub));
+        self.screen = Some(AppScreen::Reader);
+    }
+
+    pub fn update_reader_progress(&mut self, book_path: impl Into<String>, current_page: u32, chapter: u16, is_epub: bool) {
+        self.reader_session = Some(ReaderSession::new(book_path, current_page, chapter, is_epub));
+        self.screen = Some(AppScreen::Reader);
+    }
+
 }

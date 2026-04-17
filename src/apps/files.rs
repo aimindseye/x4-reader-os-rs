@@ -146,6 +146,18 @@ impl FilesApp {
         out
     }
 
+
+    pub fn selected_shell_entry(&self) -> Option<BrowserEntry> {
+        self.selected_entry().map(|entry| {
+            let label = entry.display_name();
+            if entry.is_dir {
+                BrowserEntry::directory(label)
+            } else {
+                BrowserEntry::file(label)
+            }
+        })
+    }
+
     pub fn restore_state(&mut self, scroll: usize, selected: usize, total: usize) {
         self.scroll = scroll;
         self.selected = selected;

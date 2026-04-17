@@ -169,14 +169,22 @@ impl AppManager {
     fn sync_shell_reader(&mut self) {
         let filename = core::str::from_utf8(self.reader.filename_bytes()).unwrap_or("");
         if filename.is_empty() {
-            self.app_shell.clear_reader_session();
-        } else {
-            self.app_shell.set_reader_session(ReaderSession::new(
-                filename,
-                self.reader.page() as u32,
-                self.reader.chapter(),
-                self.reader.is_epub(),
-            ));
+            return;
+        }
+
+        self.app_shell.update_reader_progress(
+            filename,
+            self.reader.page() as u32,
+            self.reader.chapter(),
+            self.reader.is_epub(),
+        );
+    }
+
+    fn seed_reader_handoff_from_files(&mut self) {
+        if let Some(entry) = self.files.selected_shell_entry() {
+            let is_epub = matches!(entry.kind, crate::app::BrowserEntryKind::File)
+                && entry.name.as_bytes().ends_with(b".epub");
+            self.app_shell.begin_reader_handoff(entry.name, is_epub);
         }
     }
 
@@ -516,6 +524,10 @@ impl AppManager {
 
             self.propagate_fonts();
             self.launcher.ctx.clear_loading();
+
+            if nav.to == AppId::Reader && nav.from == AppId::Files {
+                self.seed_reader_handoff_from_files();
+            }
 
             if nav.to != AppId::Upload {
                 if nav.resume {
