@@ -10,6 +10,7 @@ use crate::apps::reader::ReaderApp;
 use crate::apps::settings::SettingsApp;
 use crate::apps::{App, AppContext, AppId, Launcher, PendingSetting, Redraw, Transition};
 use crate::app::{AppScreen, AppShell, ReaderSession};
+use crate::apps::widgets::button_feedback::LabelMode;
 use esp_hal::delay::Delay;
 
 use crate::apps::widgets::quick_menu::{MAX_APP_ACTIONS, QuickMenuResult};
@@ -126,6 +127,7 @@ impl AppManager {
             mapper,
         };
         this.sync_shell_from_runtime();
+        let _ = this.bumps.set_label_mode(this.active_button_label_mode());
         this
     }
 
@@ -247,11 +249,22 @@ impl AppManager {
         self.sync_button_config();
     }
 
-    // sync button mapper and label widget from settings
+    fn active_button_label_mode(&self) -> LabelMode {
+        match self.launcher.active() {
+            AppId::Reader => LabelMode::Reader,
+            _ => LabelMode::Default,
+        }
+    }
+
+    // sync button mapper and label widget from settings and active app
     pub fn sync_button_config(&mut self) {
         let swap = self.settings.system_settings().swap_buttons;
         self.mapper.set_swap(swap);
-        if self.bumps.set_swap(swap) {
+
+        let swap_changed = self.bumps.set_swap(swap);
+        let mode_changed = self.bumps.set_label_mode(self.active_button_label_mode());
+
+        if swap_changed || mode_changed {
             // labels changed, need to redraw the button bar
             self.launcher.ctx.mark_dirty(crate::ui::Region::new(
                 0,
@@ -567,6 +580,7 @@ impl AppManager {
             }
 
             self.sync_shell_from_runtime();
+            self.sync_button_config();
         }
     }
 

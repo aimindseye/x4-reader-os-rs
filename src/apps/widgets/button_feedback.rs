@@ -91,20 +91,38 @@ fn bump_region(def: &BumpDef) -> Region {
     }
 }
 
-fn action_label(action: Action) -> &'static str {
-    match action {
-        Action::Next => "Next",
-        Action::Prev => "Prev",
-        Action::NextJump => ">>",
-        Action::PrevJump => "<<",
-        Action::Select => "OK",
-        Action::Back => "Back",
-        Action::Menu => "",
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LabelMode {
+    Default,
+    Reader,
+}
+
+fn action_label(mode: LabelMode, action: Action) -> &'static str {
+    match mode {
+        LabelMode::Default => match action {
+            Action::Next => "Next",
+            Action::Prev => "Prev",
+            Action::NextJump => ">>",
+            Action::PrevJump => "<<",
+            Action::Select => "OK",
+            Action::Back => "Back",
+            Action::Menu => "",
+        },
+        LabelMode::Reader => match action {
+            Action::Next => "Next",
+            Action::Prev => "Prev",
+            Action::NextJump => "Ch+",
+            Action::PrevJump => "Ch-",
+            Action::Select => "",
+            Action::Back => "Back",
+            Action::Menu => "",
+        },
     }
 }
 
 pub struct ButtonFeedback {
     swap: bool,
+    mode: LabelMode,
     font: Option<&'static BitmapFont>,
 }
 
@@ -118,12 +136,22 @@ impl ButtonFeedback {
     pub const fn new() -> Self {
         Self {
             swap: false,
+            mode: LabelMode::Default,
             font: None,
         }
     }
 
     pub fn set_chrome_font(&mut self, font: &'static BitmapFont) {
         self.font = Some(font);
+    }
+
+    pub fn set_label_mode(&mut self, mode: LabelMode) -> bool {
+        if self.mode != mode {
+            self.mode = mode;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn set_swap(&mut self, swap: bool) -> bool {
@@ -162,7 +190,7 @@ impl ButtonFeedback {
                 .unwrap();
 
             let action = mapper.map_button(def.button);
-            let label = action_label(action);
+            let label = action_label(self.mode, action);
             if label.is_empty() {
                 continue;
             }

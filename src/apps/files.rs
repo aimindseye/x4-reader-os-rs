@@ -145,19 +145,16 @@ impl FilesApp {
         }
         out
     }
-
-
-    pub fn selected_shell_entry(&self) -> Option<BrowserEntry> {
-        self.selected_entry().map(|entry| {
-            let label = entry.display_name();
-            if entry.is_dir {
-                BrowserEntry::directory(label)
-            } else {
-                BrowserEntry::file(label)
-            }
-        })
-    }
-
+pub fn selected_shell_entry(&self) -> Option<BrowserEntry> {
+    self.selected_entry().map(|entry| {
+        let label = entry.display_name();
+        if entry.is_dir {
+            BrowserEntry::directory(label)
+        } else {
+            BrowserEntry::file(label)
+        }
+    })
+}
     pub fn restore_state(&mut self, scroll: usize, selected: usize, total: usize) {
         self.scroll = scroll;
         self.selected = selected;
@@ -480,7 +477,7 @@ impl App<AppId> for FilesApp {
     fn draw(&self, strip: &mut StripBuffer) {
         let header_region =
             Region::new(LIST_X, TITLE_Y, HEADER_W, self.ui_fonts.heading.line_height);
-        BitmapLabel::new(header_region, "Files", self.ui_fonts.heading)
+        BitmapLabel::new(header_region, "Library", self.ui_fonts.heading)
             .alignment(Alignment::CenterLeft)
             .draw(strip)
             .unwrap();
@@ -490,7 +487,7 @@ impl App<AppId> for FilesApp {
                 .alignment(Alignment::CenterRight);
             let _ = write!(status, "{}/{}", self.scroll + self.selected + 1, self.total);
             if self.title_scanning {
-                let _ = write!(status, " ...");
+                let _ = write!(status, " scan");
             }
             status.draw(strip).unwrap();
         }
@@ -512,7 +509,7 @@ impl App<AppId> for FilesApp {
         }
 
         if self.count == 0 && !self.needs_load {
-            BitmapLabel::new(self.row_region(0), "No files found", self.ui_fonts.body)
+            BitmapLabel::new(self.row_region(0), "No files on SD card", self.ui_fonts.body)
                 .alignment(Alignment::CenterLeft)
                 .draw(strip)
                 .unwrap();
@@ -526,11 +523,15 @@ impl App<AppId> for FilesApp {
                 let entry = &self.entries[i];
                 let name = entry.display_name();
 
-                BitmapLabel::new(region, name, self.ui_fonts.body)
+                let mut label = BitmapDynLabel::<96>::new(region, self.ui_fonts.body)
                     .alignment(Alignment::CenterLeft)
-                    .inverted(i == self.selected)
-                    .draw(strip)
-                    .unwrap();
+                    .inverted(i == self.selected);
+                if entry.is_dir {
+                    let _ = write!(label, "[DIR] {}", name);
+                } else {
+                    let _ = write!(label, "{}", name);
+                }
+                label.draw(strip).unwrap();
             } else {
                 region
                     .to_rect()

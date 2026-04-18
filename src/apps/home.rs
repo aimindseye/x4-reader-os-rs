@@ -21,7 +21,10 @@ const ITEM_H: u16 = 52;
 const ITEM_GAP: u16 = 14;
 const ITEM_STRIDE: u16 = ITEM_H + ITEM_GAP;
 const ITEM_X: u16 = (SCREEN_W - ITEM_W) / 2;
-const TITLE_ITEM_GAP: u16 = 24;
+
+const TITLE_ITEM_GAP: u16 = 20;
+const RECENT_PREVIEW_GAP: u16 = 10;
+
 const MAX_ITEMS: usize = 5;
 
 // bookmark list layout (matches Files app)
@@ -35,8 +38,19 @@ const BM_STATUS_X: u16 = SCREEN_W - LARGE_MARGIN - BM_STATUS_W;
 
 const CONTENT_REGION: Region = Region::new(0, CONTENT_TOP, SCREEN_W, SCREEN_H - CONTENT_TOP);
 
-fn compute_item_regions(heading_line_h: u16) -> [Region; MAX_ITEMS] {
-    let item_y = CONTENT_TOP + 8 + heading_line_h + TITLE_ITEM_GAP;
+fn compute_item_regions(
+    heading_line_h: u16,
+    body_line_h: u16,
+    has_recent: bool,
+) -> [Region; MAX_ITEMS] {
+    let recent_block_h = if has_recent {
+        body_line_h + RECENT_PREVIEW_GAP
+    } else {
+        0
+    };
+
+    let item_y = CONTENT_TOP + 8 + heading_line_h + TITLE_ITEM_GAP + recent_block_h;
+
     [
         Region::new(ITEM_X, item_y, ITEM_W, ITEM_H),
         Region::new(ITEM_X, item_y + ITEM_STRIDE, ITEM_W, ITEM_H),
@@ -89,7 +103,7 @@ impl HomeApp {
             state: HomeState::Menu,
             selected: 0,
             ui_fonts: uf,
-            item_regions: compute_item_regions(uf.heading.line_height),
+            item_regions: compute_item_regions(uf.heading.line_height, uf.body.line_height, false),
             item_count: 4, // updated after load; may include Continue
             recent_book: [0u8; 32],
             recent_book_len: 0,
@@ -104,7 +118,15 @@ impl HomeApp {
 
     pub fn set_ui_font_size(&mut self, idx: u8) {
         self.ui_fonts = fonts::UiFonts::for_size(idx);
-        self.item_regions = compute_item_regions(self.ui_fonts.heading.line_height);
+        self.refresh_menu_layout();
+    }
+
+    fn refresh_menu_layout(&mut self) {
+        self.item_regions = compute_item_regions(
+            self.ui_fonts.heading.line_height,
+            self.ui_fonts.body.line_height,
+            self.has_recent(),
+        );
     }
 
     // Session state accessors for RTC persistence
@@ -169,6 +191,7 @@ impl HomeApp {
             }
         }
         self.rebuild_item_count();
+        self.refresh_menu_layout();
         self.needs_load_recent = false;
     }
 
@@ -297,6 +320,15 @@ impl HomeApp {
             self.ui_fonts.heading.line_height,
         )
     }
+
+    fn recent_preview_region(&self) -> Region {
+        Region::new(
+            ITEM_X,
+            CONTENT_TOP + 8 + self.ui_fonts.heading.line_height + 6,
+            ITEM_W,
+            self.ui_fonts.body.line_height,
+        )
+    }
 }
 
 impl App<AppId> for HomeApp {
@@ -330,6 +362,8 @@ impl App<AppId> for HomeApp {
             }
             self.rebuild_item_count();
             self.needs_load_recent = false;
+            self.item_count = if self.recent_book_len > 0 { 5 } else { 4 };
+            self.refresh_menu_layout();
             if self.item_count != old_count {
                 ctx.request_full_redraw();
             }
@@ -510,10 +544,18 @@ impl HomeApp {
             ITEM_W,
             self.ui_fonts.heading.line_height,
         );
-        BitmapLabel::new(title_region, "pulp-os", self.ui_fonts.heading)
+        BitmapLabel::new(title_region, "Home", self.ui_fonts.heading)
             .alignment(Alignment::Center)
             .draw(strip)
             .unwrap();
+
+        if let Some(recent) = self.recent_book_str() {
+            let mut preview =
+                BitmapDynLabel::<48>::new(self.recent_preview_region(), self.ui_fonts.body)
+                    .alignment(Alignment::Center);
+            let _ = write!(preview, "{}", recent);
+            preview.draw(strip).unwrap();
+        }
 
         for i in 0..self.item_count {
             let label = self.item_label(i);
@@ -545,7 +587,7 @@ impl HomeApp {
         }
 
         if self.bm_count == 0 {
-            BitmapLabel::new(self.bm_row_region(0), "No bookmarks", self.ui_fonts.body)
+            BitmapLabel::new(self.bm_row_region(0), "No bookmarks yet", self.ui_fonts.body)
                 .alignment(Alignment::CenterLeft)
                 .draw(strip)
                 .unwrap();

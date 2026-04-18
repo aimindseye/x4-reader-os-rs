@@ -41,10 +41,10 @@ use smol_epub::zip::{self, ZipIndex};
 // this never changes; only the text content area responds to the reading theme.
 pub(super) const MARGIN: u16 = 8;
 
-pub(super) const HEADER_Y: u16 = CONTENT_TOP + TITLE_Y_OFFSET - 2; // slightly tighter
-pub(super) const HEADER_H: u16 = 16;
+pub(super) const HEADER_Y: u16 = CONTENT_TOP + TITLE_Y_OFFSET - 1;
+pub(super) const HEADER_H: u16 = 22;
 
-pub(super) const TEXT_Y: u16 = HEADER_Y + HEADER_H + 2;
+pub(super) const TEXT_Y: u16 = HEADER_Y + HEADER_H + 4;
 
 pub(super) const LINE_H: u16 = 20;
 
@@ -549,14 +549,14 @@ impl ReaderApp {
         n += 1;
 
         if self.is_epub && self.epub.spine.len() > 1 {
-            self.qa_buf[n] = QuickAction::trigger(QA_PREV_CHAPTER, "Prev Ch", "<<<");
+            self.qa_buf[n] = QuickAction::trigger(QA_PREV_CHAPTER, "Previous Chapter", "Ch-");
             n += 1;
-            self.qa_buf[n] = QuickAction::trigger(QA_NEXT_CHAPTER, "Next Ch", ">>>");
+            self.qa_buf[n] = QuickAction::trigger(QA_NEXT_CHAPTER, "Next Chapter", "Ch+");
             n += 1;
         }
 
         if self.is_epub && self.epub.toc.as_ref().map_or(false, |t| !t.is_empty()) {
-            self.qa_buf[n] = QuickAction::trigger(QA_TOC, "Contents", "Open");
+            self.qa_buf[n] = QuickAction::trigger(QA_TOC, "Table of Contents", "TOC");
             n += 1;
         }
 
@@ -1397,25 +1397,33 @@ impl App<AppId> for ReaderApp {
     }
 
     fn draw(&self, strip: &mut StripBuffer) {
-        let cf = self.chrome_font;
+        let overlay_font = self.chrome_font;
+        let header_font = Some(fonts::body_font(1));
+        let status_font = Some(fonts::body_font(1));
 
         draw_chrome_text(
             strip,
             HEADER_REGION,
             self.display_name(),
             Alignment::CenterLeft,
-            cf,
+            header_font,
         );
 
         if self.state == State::ShowToc {
-            draw_chrome_text(strip, STATUS_REGION, "Contents", Alignment::CenterRight, cf);
+            draw_chrome_text(
+                strip,
+                STATUS_REGION,
+                "Contents",
+                Alignment::CenterRight,
+                status_font,
+            );
         } else if self.is_epub && !self.epub.spine.is_empty() {
             let mut sbuf = StackFmt::<40>::new();
             if self.epub.spine.len() > 1 {
                 if self.pg.fully_indexed {
                     let _ = write!(
                         sbuf,
-                        "Ch{}/{} {}/{}",
+                        "Ch {}/{} | Pg {}/{}",
                         self.epub.chapter + 1,
                         self.epub.spine.len(),
                         self.pg.page + 1,
@@ -1424,16 +1432,16 @@ impl App<AppId> for ReaderApp {
                 } else {
                     let _ = write!(
                         sbuf,
-                        "Ch{}/{} p{}",
+                        "Ch {}/{} | Pg {}",
                         self.epub.chapter + 1,
                         self.epub.spine.len(),
                         self.pg.page + 1
                     );
                 }
             } else if self.pg.fully_indexed {
-                let _ = write!(sbuf, "{}/{}", self.pg.page + 1, self.pg.total_pages);
+                let _ = write!(sbuf, "Pg {}/{}", self.pg.page + 1, self.pg.total_pages);
             } else {
-                let _ = write!(sbuf, "p{}", self.pg.page + 1);
+                let _ = write!(sbuf, "Pg {}", self.pg.page + 1);
             }
             if self.epub.bg_cache != BgCacheState::Idle {
                 let cached = self.cached_chapter_count();
@@ -1455,21 +1463,21 @@ impl App<AppId> for ReaderApp {
                 STATUS_REGION,
                 sbuf.as_str(),
                 Alignment::CenterRight,
-                cf,
+                status_font,
             );
         } else if self.file_size > 0 {
             let mut sbuf = StackFmt::<24>::new();
             if self.pg.fully_indexed {
-                let _ = write!(sbuf, "{}/{}", self.pg.page + 1, self.pg.total_pages);
+                let _ = write!(sbuf, "Pg {}/{}", self.pg.page + 1, self.pg.total_pages);
             } else {
-                let _ = write!(sbuf, "p{}", self.pg.page + 1);
+                let _ = write!(sbuf, "Pg {}", self.pg.page + 1);
             }
             draw_chrome_text(
                 strip,
                 STATUS_REGION,
                 sbuf.as_str(),
                 Alignment::CenterRight,
-                cf,
+                status_font,
             );
         }
 
@@ -1481,7 +1489,7 @@ impl App<AppId> for ReaderApp {
                 LOADING_REGION,
                 ebuf.as_str(),
                 Alignment::CenterLeft,
-                cf,
+                status_font,
             );
             return;
         }
@@ -1703,7 +1711,7 @@ impl App<AppId> for ReaderApp {
                 if self.pg.fully_indexed {
                     let _ = write!(
                         pbuf,
-                        "Ch {}/{}  Page {}/{}",
+                        "Ch {}/{} | Pg {}/{}",
                         self.epub.chapter + 1,
                         self.epub.spine.len(),
                         self.pg.page + 1,
@@ -1712,18 +1720,18 @@ impl App<AppId> for ReaderApp {
                 } else {
                     let _ = write!(
                         pbuf,
-                        "Ch {}/{}  Page {}",
+                        "Ch {}/{} | Pg {}",
                         self.epub.chapter + 1,
                         self.epub.spine.len(),
                         self.pg.page + 1
                     );
                 }
             } else if self.pg.fully_indexed {
-                let _ = write!(pbuf, "Page {}/{}", self.pg.page + 1, self.pg.total_pages);
+                let _ = write!(pbuf, "Pg {}/{}", self.pg.page + 1, self.pg.total_pages);
             } else {
                 let _ = write!(
                     pbuf,
-                    "Page {}  ({}%)",
+                    "Pg {}  ({}%)",
                     self.pg.page + 1,
                     self.progress_pct()
                 );
@@ -1735,7 +1743,7 @@ impl App<AppId> for ReaderApp {
                 .draw(strip)
                 .unwrap();
             let text = pbuf.as_str();
-            if let Some(f) = cf {
+            if let Some(f) = overlay_font {
                 f.draw_aligned(
                     strip,
                     POSITION_OVERLAY,
