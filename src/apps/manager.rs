@@ -9,6 +9,8 @@ use crate::apps::home::HomeApp;
 use crate::apps::reader::ReaderApp;
 use crate::apps::settings::SettingsApp;
 use crate::apps::{App, AppContext, AppId, Launcher, PendingSetting, Redraw, Transition};
+use crate::app::{AppScreen, AppShell, ReaderSession};
+use crate::apps::widgets::button_feedback::LabelMode;
 use esp_hal::delay::Delay;
 
 use crate::apps::widgets::quick_menu::{MAX_APP_ACTIONS, QuickMenuResult};
@@ -92,6 +94,8 @@ pub struct AppManager {
     pub reader: &'static mut ReaderApp,
     pub settings: &'static mut SettingsApp,
 
+    pub app_shell: AppShell,
+
     pub quick_menu: &'static mut QuickMenu,
     pub bumps: &'static mut ButtonFeedback,
 
@@ -106,25 +110,107 @@ impl AppManager {
         files: &'static mut FilesApp,
         reader: &'static mut ReaderApp,
         settings: &'static mut SettingsApp,
+        app_shell: AppShell,
         quick_menu: &'static mut QuickMenu,
         bumps: &'static mut ButtonFeedback,
         mapper: ButtonMapper,
     ) -> Self {
-        Self {
+        let mut this = Self {
             launcher,
             home,
             files,
             reader,
             settings,
+            app_shell,
             quick_menu,
             bumps,
             mapper,
-        }
+        };
+        this.sync_shell_from_runtime();
+        let _ = this.bumps.set_label_mode(this.active_button_label_mode());
+        this
     }
 
     #[inline]
     pub fn active(&self) -> AppId {
         self.launcher.active()
+    }
+
+    #[inline]
+    pub fn app_shell(&self) -> &AppShell {
+        &self.app_shell
+    }
+
+    #[inline]
+    pub fn app_shell_mut(&mut self) -> &mut AppShell {
+        &mut self.app_shell
+    }
+
+    pub fn sync_shell_from_runtime(&mut self) {
+        self.sync_shell_home();
+        self.sync_shell_files();
+        self.sync_shell_reader();
+        self.sync_shell_from_active();
+    }
+
+    fn sync_shell_home(&mut self) {
+        self.app_shell
+            .set_home(self.home.shell_menu_items(), self.home.selected());
+
+        if let Some(path) = self.home.recent_book_str() {
+            self.app_shell.set_continue_target(path);
+        } else {
+            self.app_shell.clear_continue_target();
+        }
+    }
+
+    fn sync_shell_files(&mut self) {
+        self.app_shell.set_browser_state(
+            "/",
+            self.files.scroll(),
+            self.files.selected(),
+            self.files.total(),
+            self.files.shell_entries(),
+        );
+    }
+
+    fn sync_shell_reader(&mut self) {
+        let filename = core::str::from_utf8(self.reader.filename_bytes()).unwrap_or("");
+        if filename.is_empty() {
+            return;
+        }
+
+        self.app_shell.update_reader_progress(
+            filename,
+            self.reader.page() as u32,
+            self.reader.chapter(),
+            self.reader.is_epub(),
+        );
+    }
+
+    fn seed_reader_handoff_from_files(&mut self) {
+        if let Some(entry) = self.files.selected_shell_entry() {
+            let is_epub = matches!(entry.kind, crate::app::BrowserEntryKind::File)
+                && entry.name.as_bytes().ends_with(b".epub");
+            self.app_shell.begin_reader_handoff(entry.name, is_epub);
+        }
+    }
+
+    fn seed_reader_handoff_from_home(&mut self) {
+        if let Some(path) = self.home.recent_book_str() {
+            let is_epub = path.as_bytes().ends_with(b".epub");
+            self.app_shell.begin_reader_handoff(path, is_epub);
+        }
+    }
+
+    pub fn sync_shell_from_active(&mut self) {
+        let next = match self.launcher.active() {
+            AppId::Home => AppScreen::Home,
+            AppId::Files => AppScreen::Browser,
+            AppId::Reader => AppScreen::Reader,
+            AppId::Settings | AppId::Upload => self.app_shell.screen(),
+        };
+        self.app_shell.set_screen(next);
     }
 
     #[inline]
@@ -163,11 +249,22 @@ impl AppManager {
         self.sync_button_config();
     }
 
-    // sync button mapper and label widget from settings
+    fn active_button_label_mode(&self) -> LabelMode {
+        match self.launcher.active() {
+            AppId::Reader => LabelMode::Reader,
+            _ => LabelMode::Default,
+        }
+    }
+
+    // sync button mapper and label widget from settings and active app
     pub fn sync_button_config(&mut self) {
         let swap = self.settings.system_settings().swap_buttons;
         self.mapper.set_swap(swap);
-        if self.bumps.set_swap(swap) {
+
+        let swap_changed = self.bumps.set_swap(swap);
+        let mode_changed = self.bumps.set_label_mode(self.active_button_label_mode());
+
+        if swap_changed || mode_changed {
             // labels changed, need to redraw the button bar
             self.launcher.ctx.mark_dirty(crate::ui::Region::new(
                 0,
@@ -180,10 +277,12 @@ impl AppManager {
 
     pub fn load_home_recent(&mut self, k: &mut KernelHandle<'_>) {
         self.home.load_recent(k);
+        self.sync_shell_home();
     }
 
     pub fn enter_initial(&mut self, k: &mut KernelHandle<'_>) {
         self.home.on_enter(&mut self.launcher.ctx, k);
+        self.sync_shell_from_runtime();
     }
 
     // collect session state to RTC memory struct before sleep
@@ -358,22 +457,23 @@ impl AppManager {
     pub fn dispatch_event(&mut self, hw_event: Event, bm_cache: &mut BookmarkCache) -> Transition {
         let event = self.mapper.map_event(hw_event);
 
-        if self.quick_menu.open {
-            return self.handle_quick_menu(event, bm_cache);
-        }
-
-        if matches!(event, ActionEvent::Press(Action::Menu)) {
+        let transition = if self.quick_menu.open {
+            self.handle_quick_menu(event, bm_cache)
+        } else if matches!(event, ActionEvent::Press(Action::Menu)) {
             let active = self.launcher.active();
             let actions: &[_] = with_app!(active, self, |app| app.quick_actions());
             self.quick_menu.show(actions);
             self.launcher.ctx.mark_dirty(self.quick_menu.region());
-            return Transition::None;
-        }
+            Transition::None
+        } else {
+            let active = self.launcher.active();
+            with_app!(active, self, |app| {
+                app.on_event(event, &mut self.launcher.ctx)
+            })
+        };
 
-        let active = self.launcher.active();
-        with_app!(active, self, |app| {
-            app.on_event(event, &mut self.launcher.ctx)
-        })
+        self.sync_shell_from_runtime();
+        transition
     }
 
     fn handle_quick_menu(
@@ -451,6 +551,14 @@ impl AppManager {
             self.propagate_fonts();
             self.launcher.ctx.clear_loading();
 
+            if nav.to == AppId::Reader {
+                match nav.from {
+                    AppId::Files => self.seed_reader_handoff_from_files(),
+                    AppId::Home => self.seed_reader_handoff_from_home(),
+                    _ => {}
+                }
+            }
+
             if nav.to != AppId::Upload {
                 if nav.resume {
                     with_app!(nav.to, self, |app| {
@@ -470,6 +578,9 @@ impl AppManager {
             } else {
                 self.launcher.ctx.request_full_redraw();
             }
+
+            self.sync_shell_from_runtime();
+            self.sync_button_config();
         }
     }
 
@@ -491,6 +602,10 @@ impl AppManager {
 
         // sync button configuration from settings (may have changed)
         self.sync_button_config();
+
+        // Thin polish: refresh shell mirrors after app background work has
+        // loaded recent books, file pages, or reader position.
+        self.sync_shell_from_runtime();
     }
 
     pub fn draw(&self, strip: &mut StripBuffer) {

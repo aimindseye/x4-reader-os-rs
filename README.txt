@@ -1,9 +1,9 @@
-pulp-os -- e-reader firmware for the XTEink X4
+vaachak-os -- e-reader firmware for the XTEink X4
 
 bare-metal e-reader operating system for the XTEink X4 board
 (ESP32-C3 + SSD1677 e-paper). written in Rust. no std, no
 framebuffer, no dyn dispatch. async runtime via Embassy on
-esp-rtos.
+esp-rtos. Forked from pulp-os
 
 hardware
     mcu         ESP32-C3, single-core RISC-V RV32IMC, 160 MHz
