@@ -2,13 +2,19 @@ mod epubs;
 mod images;
 mod paging;
 
-pub use pulp_kernel::util::decode_utf8_char;
+pub use x4_kernel::util::decode_utf8_char;
 
 use crate::apps::PendingSetting;
 use crate::fonts::bitmap::{self, BitmapFont};
 
 use alloc::boxed::Box;
+use alloc::string::ToString;
 use alloc::vec::Vec;
+
+use crate::apps::reader_state::{
+    self, BookId, BookMetaRecord, BookmarkRecord, ReaderThemePreset, ReadingProgressRecord,
+    RecentBookRecord,
+};
 use core::fmt::Write;
 
 use embedded_graphics::mono_font::MonoTextStyle;
@@ -55,6 +61,8 @@ pub(super) const LINES_PER_PAGE: usize = 37;
 pub(super) const PAGE_BUF: usize = 8192;
 
 pub(super) const MAX_PAGES: usize = 512;
+
+const PROGRESS_RECORD_BUF: usize = 256;
 
 pub(super) const HEADER_REGION: Region = Region::new(MARGIN, HEADER_Y, HEADER_W, HEADER_H);
 
@@ -113,11 +121,13 @@ const LOADING_H: u16 = 24;
 pub(super) const LOADING_REGION: Region = Region::new(MARGIN, TEXT_Y, LOADING_W, LOADING_H);
 
 pub const QA_FONT_SIZE: u8 = 1;
+pub(super) const QA_THEME: u8 = 2;
 pub(super) const QA_PREV_CHAPTER: u8 = 3;
 pub(super) const QA_NEXT_CHAPTER: u8 = 4;
 pub(super) const QA_TOC: u8 = 5;
+pub(super) const QA_BOOKMARKS: u8 = 6;
 
-pub(super) const QA_MAX: usize = 4;
+pub(super) const QA_MAX: usize = 6;
 
 // reader state machine:
 // NeedBookmark -> NeedInit -> NeedOpf -> NeedToc -> NeedCache -> NeedIndex -> NeedPage -> Ready
@@ -133,6 +143,7 @@ pub(super) enum State {
     NeedPage,
     Ready,
     ShowToc,
+    ShowBookmarks,
     Error,
 }
 
@@ -371,6 +382,15 @@ pub struct ReaderApp {
     pub(super) chrome_font: Option<&'static BitmapFont>,
     pub(super) qa_buf: [QuickAction; QA_MAX],
     pub(super) qa_count: u8,
+
+    pub(super) bookmarks: Vec<BookmarkRecord>,
+    pub(super) bookmarks_loaded: bool,
+    pub(super) explicit_bookmark_jump_pending: bool,
+    pub(super) bookmark_selected: usize,
+    pub(super) bookmark_scroll: usize,
+    pub(super) pending_bookmark_toggle: bool,
+    pub(super) pending_open_bookmarks: bool,
+    pub(super) pending_theme_persist: bool,
 }
 
 impl ReaderApp {
@@ -418,6 +438,15 @@ impl ReaderApp {
 
             qa_buf: [QuickAction::trigger(0, "", ""); QA_MAX],
             qa_count: 0,
+
+            bookmarks: Vec::new(),
+            bookmarks_loaded: false,
+            explicit_bookmark_jump_pending: false,
+            bookmark_selected: 0,
+            bookmark_scroll: 0,
+            pending_bookmark_toggle: false,
+            pending_open_bookmarks: false,
+            pending_theme_persist: false,
         }
     }
 
@@ -548,6 +577,14 @@ impl ReaderApp {
         );
         n += 1;
 
+        self.qa_buf[n] = QuickAction::cycle(
+            QA_THEME,
+            "Reading Theme",
+            self.reading_theme_idx,
+            reader_state::THEME_NAMES,
+        );
+        n += 1;
+
         if self.is_epub && self.epub.spine.len() > 1 {
             self.qa_buf[n] = QuickAction::trigger(QA_PREV_CHAPTER, "Previous Chapter", "Ch-");
             n += 1;
@@ -559,6 +596,9 @@ impl ReaderApp {
             self.qa_buf[n] = QuickAction::trigger(QA_TOC, "Table of Contents", "TOC");
             n += 1;
         }
+
+        self.qa_buf[n] = QuickAction::trigger(QA_BOOKMARKS, "Bookmarks", "Bkmk");
+        n += 1;
 
         self.qa_count = n as u8;
     }
@@ -645,6 +685,598 @@ impl ReaderApp {
         self.book_font_size_idx
     }
 
+    fn current_book_id(&self) -> Option<BookId> {
+        if self.filename_len == 0 {
+            None
+        } else {
+            Some(BookId::from_path(self.name()))
+        }
+    }
+
+    fn current_book_cache_dirs(&self, book_id: &BookId) -> alloc::vec::Vec<alloc::string::String> {
+        reader_state::candidate_cache_dirs_for(book_id)
+    }
+
+    pub fn current_progress_record(&self) -> Option<ReadingProgressRecord> {
+        if self.filename_len == 0 {
+            return None;
+        }
+
+        Some(ReadingProgressRecord::new(
+            self.name(),
+            self.chapter(),
+            self.page() as u32,
+            self.byte_offset(),
+            self.book_font_size_idx,
+        ))
+    }
+
+    pub fn current_recent_record(&self) -> Option<RecentBookRecord> {
+        if self.filename_len == 0 {
+            return None;
+        }
+
+        let mut rec = RecentBookRecord::from_path(self.name());
+        rec.display_title = self.display_name().into();
+        rec.chapter = self.chapter();
+        rec.page = self.page() as u32;
+        rec.byte_offset = self.byte_offset();
+        Some(rec)
+    }
+
+    fn current_meta_record(&self) -> Option<BookMetaRecord> {
+        if self.filename_len == 0 {
+            return None;
+        }
+
+        let mut rec = BookMetaRecord::from_path(self.name());
+        rec.display_title = self.display_name().into();
+        Some(rec)
+    }
+
+    fn load_persisted_progress(&mut self, k: &mut KernelHandle<'_>, allow_position: bool) -> bool {
+        let Some(book_id) = self.current_book_id() else {
+            return false;
+        };
+
+        let mut buf = [0u8; PROGRESS_RECORD_BUF];
+        for subdir in self.current_book_cache_dirs(&book_id) {
+            let size = match k.read_app_subdir_chunk(
+                subdir.as_str(),
+                reader_state::PROGRESS_RECORD_FILE,
+                0,
+                &mut buf,
+            ) {
+                Ok(n) if n > 0 => n,
+                _ => continue,
+            };
+
+            let line = match core::str::from_utf8(&buf[..size]) {
+                Ok(s) => s.trim(),
+                Err(_) => continue,
+            };
+
+            let Some(rec) = ReadingProgressRecord::decode_line(line) else {
+                continue;
+            };
+
+            self.book_font_size_idx = rec.font_size_idx;
+            if allow_position {
+                self.epub.chapter = rec.chapter;
+                self.restore_offset = if rec.byte_offset > 0 {
+                    Some(rec.byte_offset)
+                } else {
+                    None
+                };
+            }
+
+            log::info!(
+                "reader: persisted progress file={} ch={} off={} font={}",
+                rec.source_path,
+                rec.chapter,
+                rec.byte_offset,
+                rec.font_size_idx
+            );
+
+            return true;
+        }
+
+        false
+    }
+
+    fn persist_recent_record(&self, k: &mut KernelHandle<'_>) {
+        let Some(rec) = self.current_recent_record() else {
+            return;
+        };
+
+        let _ = k.ensure_app_subdir(reader_state::STATE_DIR);
+        let encoded = rec.encode_line();
+        let _ = k.write_app_subdir(
+            reader_state::STATE_DIR,
+            reader_state::RECENT_RECORD_FILE,
+            encoded.as_bytes(),
+        );
+    }
+
+    fn persist_meta_record(&self, k: &mut KernelHandle<'_>) {
+        let Some(meta) = self.current_meta_record() else {
+            return;
+        };
+
+        let subdir = reader_state::cache_dir_for(&meta.book_id);
+        let _ = k.ensure_app_subdir(subdir.as_str());
+        let encoded = meta.encode_line();
+        let _ = k.write_app_subdir(
+            subdir.as_str(),
+            reader_state::META_RECORD_FILE,
+            encoded.as_bytes(),
+        );
+    }
+
+    pub fn persist_progress_records(&self, k: &mut KernelHandle<'_>) {
+        let Some(progress) = self.current_progress_record() else {
+            return;
+        };
+
+        let subdir = reader_state::cache_dir_for(&progress.book_id);
+        let encoded = progress.encode_line();
+        let _ = k.ensure_app_subdir(subdir.as_str());
+        let _ = k.write_app_subdir(
+            subdir.as_str(),
+            reader_state::PROGRESS_RECORD_FILE,
+            encoded.as_bytes(),
+        );
+
+        self.persist_meta_record(k);
+        self.persist_recent_record(k);
+
+        let _ = k.write_app_data(RECENT_FILE, &self.filename[..self.filename_len]);
+
+        log::info!(
+            "reader: persisted progress file={} ch={} page={} off={} font={}",
+            progress.source_path,
+            progress.chapter,
+            progress.page,
+            progress.byte_offset,
+            progress.font_size_idx
+        );
+    }
+
+    pub fn current_theme_preset(&self) -> ReaderThemePreset {
+        ReaderThemePreset {
+            font_size_idx: self.book_font_size_idx,
+            margin_px: MARGIN,
+            line_spacing_pct: 100,
+            alignment: if self.reading_theme_idx == 2 {
+                "center".into()
+            } else {
+                "justify".into()
+            },
+            theme_name: match self.reading_theme_idx {
+                1 => "classic".into(),
+                2 => "serif".into(),
+                _ => "default".into(),
+            },
+        }
+    }
+
+    fn persist_theme_preset(&mut self, k: &mut KernelHandle<'_>) {
+        let Some(book_id) = self.current_book_id() else {
+            return;
+        };
+
+        let theme = self.current_theme_preset();
+        let encoded = theme.encode_line();
+        let subdir = reader_state::cache_dir_for(&book_id);
+        let _ = k.ensure_app_subdir(subdir.as_str());
+        let _ = k.write_app_subdir(
+            subdir.as_str(),
+            reader_state::THEME_RECORD_FILE,
+            encoded.as_bytes(),
+        );
+    }
+    fn load_persisted_theme_preset(&mut self, k: &mut KernelHandle<'_>) -> bool {
+        let Some(book_id) = self.current_book_id() else {
+            return false;
+        };
+
+        let mut buf = [0u8; PROGRESS_RECORD_BUF];
+        for subdir in self.current_book_cache_dirs(&book_id) {
+            let size = match k.read_app_subdir_chunk(
+                subdir.as_str(),
+                reader_state::THEME_RECORD_FILE,
+                0,
+                &mut buf,
+            ) {
+                Ok(n) if n > 0 => n,
+                _ => continue,
+            };
+
+            let line = match core::str::from_utf8(&buf[..size]) {
+                Ok(s) => s.trim(),
+                Err(_) => continue,
+            };
+
+            let Some(theme) = ReaderThemePreset::decode_line(line) else {
+                continue;
+            };
+
+            self.book_font_size_idx = theme.font_size_idx;
+            self.reading_theme_idx = reader_state::theme_idx_from_name(&theme.theme_name);
+            self.apply_theme_layout();
+            return true;
+        }
+
+        false
+    }
+
+    fn load_bookmarks_for_current_book(&mut self, k: &mut KernelHandle<'_>) -> bool {
+        self.bookmarks.clear();
+        self.bookmark_selected = 0;
+        self.bookmark_scroll = 0;
+
+        let Some(book_id) = self.current_book_id() else {
+            self.bookmarks_loaded = true;
+            log::warn!("bookmark-fix-v5: cannot load bookmarks; no current book id");
+            return false;
+        };
+
+        // Primary v5 storage: flat 8.3-safe file under STATE_DIR.
+        // This avoids the failing names seen in logs: cache/bk-8a79a61f/bookmarks.txt
+        // and bookmarks_index.txt.
+        let flat_file = reader_state::bookmark_record_file_for(&book_id);
+        let mut buf = [0u8; 4096];
+        match k.read_app_subdir_chunk(reader_state::STATE_DIR, flat_file.as_str(), 0, &mut buf) {
+            Ok(n) if n > 0 => {
+                if let Ok(payload) = core::str::from_utf8(&buf[..n]) {
+                    self.bookmarks = reader_state::decode_bookmarks(payload);
+                    self.normalize_bookmarks();
+                    self.bookmarks_loaded = true;
+                    log::info!(
+                        "bookmark-fix-v5: loaded {} bookmark(s) from state/{} for {}",
+                        self.bookmarks.len(),
+                        flat_file.as_str(),
+                        self.name()
+                    );
+                    return !self.bookmarks.is_empty();
+                }
+                log::warn!(
+                    "bookmark-fix-v5: state/{} is not utf8 for {}",
+                    flat_file.as_str(),
+                    self.name()
+                );
+            }
+            Ok(_) => {
+                log::info!(
+                    "bookmark-fix-v5: state/{} exists but is empty for {}",
+                    flat_file.as_str(),
+                    self.name()
+                );
+            }
+            Err(_) => {
+                log::debug!(
+                    "bookmark-fix-v5: no flat bookmark file state/{} for {}",
+                    flat_file.as_str(),
+                    self.name()
+                );
+            }
+        }
+
+        // Fallback: older per-book cache path, in case a future filesystem supports it
+        // or an existing SD card already has data there.
+        for subdir in self.current_book_cache_dirs(&book_id) {
+            let size = match k.read_app_subdir_chunk(
+                subdir.as_str(),
+                reader_state::BOOKMARKS_RECORD_FILE,
+                0,
+                &mut buf,
+            ) {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
+            let Ok(payload) = core::str::from_utf8(&buf[..size]) else {
+                continue;
+            };
+
+            self.bookmarks = reader_state::decode_bookmarks(payload);
+            self.normalize_bookmarks();
+            if !self.bookmarks.is_empty() {
+                self.bookmarks_loaded = true;
+                log::info!(
+                    "bookmark-fix-v5: recovered {} bookmark(s) from legacy {}/{} for {}",
+                    self.bookmarks.len(),
+                    subdir.as_str(),
+                    reader_state::BOOKMARKS_RECORD_FILE,
+                    self.name(),
+                );
+                return true;
+            }
+        }
+
+        // Fallback: global 8.3-safe index.
+        let mut index_buf = [0u8; 4096];
+        if let Ok(n) = k.read_app_subdir_chunk(
+            reader_state::STATE_DIR,
+            reader_state::BOOKMARKS_INDEX_FILE,
+            0,
+            &mut index_buf,
+        ) {
+            if n > 0 {
+                if let Ok(payload) = core::str::from_utf8(&index_buf[..n]) {
+                    self.bookmarks = reader_state::decode_bookmarks_index(payload)
+                        .into_iter()
+                        .filter(|entry| entry.book_id == book_id)
+                        .map(|entry| BookmarkRecord {
+                            book_id: entry.book_id,
+                            source_path: entry.source_path,
+                            chapter: entry.chapter,
+                            byte_offset: entry.byte_offset,
+                            label: entry.label,
+                        })
+                        .collect();
+                    self.normalize_bookmarks();
+                    if !self.bookmarks.is_empty() {
+                        self.bookmarks_loaded = true;
+                        log::info!(
+                            "bookmark-fix-v5: recovered {} bookmark(s) for {} from state/{}",
+                            self.bookmarks.len(),
+                            self.name(),
+                            reader_state::BOOKMARKS_INDEX_FILE
+                        );
+                        return true;
+                    }
+                }
+            }
+        }
+
+        self.bookmarks_loaded = true;
+        log::info!(
+            "bookmark-fix-v5: no bookmark records found for {}; starting empty",
+            self.name()
+        );
+        false
+    }
+
+    fn ensure_bookmarks_loaded(&mut self, k: &mut KernelHandle<'_>) {
+        if !self.bookmarks_loaded {
+            let _ = self.load_bookmarks_for_current_book(k);
+        }
+    }
+
+    fn normalize_bookmarks(&mut self) {
+        self.bookmarks
+            .sort_by_key(|bm| (bm.chapter, bm.byte_offset));
+        self.bookmarks.dedup_by(|a, b| {
+            a.book_id == b.book_id && a.chapter == b.chapter && a.byte_offset == b.byte_offset
+        });
+    }
+
+    fn persist_bookmarks(&mut self, k: &mut KernelHandle<'_>) {
+        let Some(book_id) = self.current_book_id() else {
+            log::warn!("bookmark-fix-v5: cannot persist bookmarks; no current book id");
+            return;
+        };
+        self.normalize_bookmarks();
+        self.bookmarks_loaded = true;
+
+        let _ = k.ensure_app_subdir(reader_state::STATE_DIR);
+        let flat_file = reader_state::bookmark_record_file_for(&book_id);
+        let encoded = reader_state::encode_bookmarks(&self.bookmarks);
+        match k.write_app_subdir(
+            reader_state::STATE_DIR,
+            flat_file.as_str(),
+            encoded.as_bytes(),
+        ) {
+            Ok(_) => log::info!(
+                "bookmark-fix-v5: persisted {} bookmark(s) to state/{} for {}",
+                self.bookmarks.len(),
+                flat_file.as_str(),
+                self.name()
+            ),
+            Err(_) => log::warn!(
+                "bookmark-fix-v5: failed to persist bookmarks to state/{} for {}",
+                flat_file.as_str(),
+                self.name()
+            ),
+        }
+    }
+
+    fn persist_bookmarks_index(&self, k: &mut KernelHandle<'_>) {
+        let Some(book_id) = self.current_book_id() else {
+            log::warn!("bookmark-fix-v5: cannot persist bookmark index; no current book id");
+            return;
+        };
+        let display_title = self.display_name().to_string();
+        let mut merged: Vec<reader_state::BookmarkIndexRecord> = Vec::new();
+        let _ = k.ensure_app_subdir(reader_state::STATE_DIR);
+        let mut buf = [0u8; 4096];
+        match k.read_app_subdir_chunk(
+            reader_state::STATE_DIR,
+            reader_state::BOOKMARKS_INDEX_FILE,
+            0,
+            &mut buf,
+        ) {
+            Ok(n) if n > 0 => {
+                if let Ok(payload) = core::str::from_utf8(&buf[..n]) {
+                    merged = reader_state::decode_bookmarks_index(payload)
+                        .into_iter()
+                        .filter(|entry| entry.book_id != book_id)
+                        .collect();
+                }
+            }
+            Ok(_) => {}
+            Err(_) => log::debug!(
+                "bookmark-fix-v5: no existing state/{} yet",
+                reader_state::BOOKMARKS_INDEX_FILE
+            ),
+        }
+
+        for bm in &self.bookmarks {
+            merged.push(reader_state::BookmarkIndexRecord::from_bookmark(
+                bm,
+                display_title.clone(),
+            ));
+        }
+        let encoded = reader_state::encode_bookmarks_index(&merged);
+        match k.write_app_subdir(
+            reader_state::STATE_DIR,
+            reader_state::BOOKMARKS_INDEX_FILE,
+            encoded.as_bytes(),
+        ) {
+            Ok(_) => log::info!(
+                "bookmark-fix-v5: persisted global bookmark index state/{} with {} total item(s); {} item(s) for {}",
+                reader_state::BOOKMARKS_INDEX_FILE,
+                merged.len(),
+                self.bookmarks.len(),
+                self.name()
+            ),
+            Err(_) => log::warn!(
+                "bookmark-fix-v5: failed to persist global bookmark index state/{} for {}",
+                reader_state::BOOKMARKS_INDEX_FILE,
+                self.name()
+            ),
+        }
+    }
+
+    fn bookmark_visible_lines(&self) -> usize {
+        let line_h = if let Some(font) = self.fonts.as_ref() {
+            font.line_height(fonts::Style::Regular)
+        } else {
+            LINE_H
+        };
+        let rows = (self.text_area_h / line_h) as usize;
+        rows.max(1)
+    }
+
+    fn bookmark_label_for_position(&self, chapter: u16, byte_offset: u32) -> alloc::string::String {
+        let mut label = alloc::string::String::new();
+        let _ = write!(
+            &mut label,
+            "Ch {} · Pg {} · Off {}",
+            u32::from(chapter) + 1,
+            self.page() + 1,
+            byte_offset
+        );
+        label
+    }
+
+    fn toggle_current_bookmark(&mut self, k: &mut KernelHandle<'_>, ctx: &mut AppContext) {
+        let Some(book_id) = self.current_book_id() else {
+            return;
+        };
+        self.ensure_bookmarks_loaded(k);
+        let chapter = self.chapter();
+        let byte_offset = self.byte_offset();
+
+        let toast = if let Some(idx) = self
+            .bookmarks
+            .iter()
+            .position(|bm| bm.same_position(chapter, byte_offset))
+        {
+            self.bookmarks.remove(idx);
+            log::info!(
+                "bookmark: removed file={} ch={} off={} (state-file)",
+                self.name(),
+                chapter,
+                byte_offset
+            );
+            "Bookmark removed"
+        } else {
+            let rec = BookmarkRecord {
+                book_id,
+                source_path: self.name().into(),
+                chapter,
+                byte_offset,
+                label: self.bookmark_label_for_position(chapter, byte_offset),
+            };
+            self.bookmarks.push(rec);
+            log::info!(
+                "bookmark: added file={} ch={} off={} (state-file)",
+                self.name(),
+                chapter,
+                byte_offset
+            );
+            "Bookmark saved"
+        };
+
+        self.persist_bookmarks(k);
+        self.persist_bookmarks_index(k);
+        ctx.set_loading(LOADING_REGION, toast, 100);
+        ctx.mark_dirty(LOADING_REGION);
+        ctx.mark_dirty(PAGE_REGION);
+    }
+
+    fn open_bookmark_overlay(&mut self, k: &mut KernelHandle<'_>, ctx: &mut AppContext) {
+        self.ensure_bookmarks_loaded(k);
+        self.bookmark_selected = 0;
+        self.bookmark_scroll = 0;
+        self.state = State::ShowBookmarks;
+        log::info!(
+            "bookmark overlay: opened for {} with {} item(s)",
+            self.name(),
+            self.bookmarks.len()
+        );
+        ctx.mark_dirty(PAGE_REGION);
+    }
+
+    fn jump_to_bookmark(&mut self, idx: usize, ctx: &mut AppContext) {
+        if let Some(bookmark) = self.bookmarks.get(idx) {
+            log::info!(
+                "bookmark-fix-v6: reader overlay jump idx={} ch={} off={} label={}",
+                idx,
+                bookmark.chapter,
+                bookmark.byte_offset,
+                bookmark.display_label()
+            );
+            self.epub.chapter = bookmark.chapter;
+            self.restore_offset = if bookmark.byte_offset > 0 {
+                Some(bookmark.byte_offset)
+            } else {
+                None
+            };
+            self.goto_last_page = false;
+            self.state = if self.is_epub {
+                State::NeedIndex
+            } else {
+                State::NeedPage
+            };
+            ctx.mark_dirty(PAGE_REGION);
+        }
+    }
+
+    fn ensure_bookmark_stub(&self, k: &mut KernelHandle<'_>) {
+        let Some(book_id) = self.current_book_id() else {
+            return;
+        };
+
+        let _ = k.ensure_app_subdir(reader_state::STATE_DIR);
+        let flat_file = reader_state::bookmark_record_file_for(&book_id);
+        let mut probe = [0u8; 1];
+        let exists = matches!(
+            k.read_app_subdir_chunk(reader_state::STATE_DIR, flat_file.as_str(), 0, &mut probe),
+            Ok(_)
+        );
+        if !exists {
+            match k.write_app_subdir(
+                reader_state::STATE_DIR,
+                flat_file.as_str(),
+                reader_state::empty_bookmarks_payload(),
+            ) {
+                Ok(_) => log::info!(
+                    "bookmark-fix-v5: created empty bookmark stub at state/{} for {}",
+                    flat_file.as_str(),
+                    self.name()
+                ),
+                Err(_) => log::warn!(
+                    "bookmark-fix-v5: failed to create bookmark stub at state/{} for {}",
+                    flat_file.as_str(),
+                    self.name()
+                ),
+            }
+        }
+    }
+
     pub fn restore_state(
         &mut self,
         filename: &[u8],
@@ -654,7 +1286,7 @@ impl ReaderApp {
         byte_offset: u32,
         font_size: u8,
     ) {
-        let len = filename.len().min(32);
+        let len = filename.len().min(self.filename.len());
         self.filename[..len].copy_from_slice(&filename[..len]);
         self.filename_len = len;
         self.is_epub = is_epub;
@@ -665,12 +1297,17 @@ impl ReaderApp {
             None
         };
         self.book_font_size_idx = font_size;
+        self.bookmarks.clear();
+        self.bookmarks_loaded = false;
+        self.explicit_bookmark_jump_pending = false;
 
         log::info!(
-            "reader: restore_state file={} ch={} off={}",
+            "bookmark-fix-v5: reader restore_state file={} ch={} off={} font={} epub={}",
             self.name(),
             chapter,
-            byte_offset
+            byte_offset,
+            font_size,
+            is_epub
         );
     }
 
@@ -815,10 +1452,33 @@ fn draw_chrome_text(
 
 impl App<AppId> for ReaderApp {
     fn on_enter(&mut self, ctx: &mut AppContext, _k: &mut KernelHandle<'_>) {
-        let msg = ctx.message();
-        let len = msg.len().min(32);
-        self.filename[..len].copy_from_slice(&msg[..len]);
-        self.filename_len = len;
+        let msg = ctx.message_str();
+        let bookmark_jump = reader_state::decode_bookmark_jump(msg);
+        if let Some((path, chapter, byte_offset)) = bookmark_jump {
+            let bytes = path.as_bytes();
+            let len = bytes.len().min(32);
+            self.filename[..len].copy_from_slice(&bytes[..len]);
+            self.filename_len = len;
+            self.epub.chapter = chapter;
+            self.restore_offset = if byte_offset > 0 {
+                Some(byte_offset)
+            } else {
+                None
+            };
+            self.explicit_bookmark_jump_pending = true;
+            log::info!(
+                "bookmark-fix-v6: explicit bookmark jump requested file={} ch={} off={}",
+                self.name(),
+                chapter,
+                byte_offset
+            );
+        } else {
+            let msg = ctx.message();
+            let len = msg.len().min(32);
+            self.filename[..len].copy_from_slice(&msg[..len]);
+            self.filename_len = len;
+            self.explicit_bookmark_jump_pending = false;
+        }
 
         let n = self.filename_len.min(self.title.len());
         self.title[..n].copy_from_slice(&self.filename[..n]);
@@ -839,12 +1499,23 @@ impl App<AppId> for ReaderApp {
         self.reset_paging();
         self.epub.ch_cache = Vec::new();
         self.file_size = 0;
-        self.epub.chapter = 0;
+        self.bookmarks.clear();
+        self.bookmarks_loaded = false;
+        self.bookmark_selected = 0;
+        self.bookmark_scroll = 0;
+        if ctx
+            .message_str()
+            .starts_with(reader_state::BOOKMARK_JUMP_PREFIX)
+        {
+            // chapter/offset already seeded from bookmark jump message above
+        } else {
+            self.epub.chapter = 0;
+            self.restore_offset = None;
+        }
         self.error = None;
         self.show_position = false;
         self.defer_image_decode = true;
         self.goto_last_page = false;
-        self.restore_offset = None;
 
         self.apply_font_metrics();
 
@@ -910,11 +1581,45 @@ impl App<AppId> for ReaderApp {
 
     async fn background(&mut self, ctx: &mut AppContext, k: &mut KernelHandle<'_>) {
         loop {
+            if self.pending_bookmark_toggle {
+                self.pending_bookmark_toggle = false;
+                self.toggle_current_bookmark(k, ctx);
+            }
+            if self.pending_open_bookmarks {
+                self.pending_open_bookmarks = false;
+                self.open_bookmark_overlay(k, ctx);
+                continue;
+            }
+            if self.pending_theme_persist {
+                self.pending_theme_persist = false;
+                self.persist_theme_preset(k);
+            }
             match self.state {
                 State::NeedBookmark => {
-                    self.bookmark_load(k.bookmark_cache());
+                    let _ = self.load_persisted_theme_preset(k);
+                    let explicit_jump = self.explicit_bookmark_jump_pending;
+                    self.explicit_bookmark_jump_pending = false;
+                    let restored_from_bookmark = if explicit_jump {
+                        log::info!(
+                            "bookmark-fix-v6: preserving explicit bookmark jump ch={} off={}",
+                            self.epub.chapter,
+                            self.restore_offset.unwrap_or(0)
+                        );
+                        false
+                    } else {
+                        self.bookmark_load(k.bookmark_cache())
+                    };
+                    let restored_from_progress =
+                        self.load_persisted_progress(k, !restored_from_bookmark && !explicit_jump);
+                    if restored_from_progress {
+                        self.apply_font_metrics();
+                    }
 
                     let _ = k.write_app_data(RECENT_FILE, &self.filename[..self.filename_len]);
+                    self.persist_recent_record(k);
+                    self.persist_theme_preset(k);
+                    self.ensure_bookmarks_loaded(k);
+                    self.ensure_bookmark_stub(k);
 
                     if self.is_epub {
                         self.epub.zip.clear();
@@ -1238,6 +1943,58 @@ impl App<AppId> for ReaderApp {
             }
         }
 
+        if self.state == State::ShowBookmarks {
+            match event {
+                ActionEvent::Press(Action::Back) | ActionEvent::LongPress(Action::Back) => {
+                    self.state = State::Ready;
+                    ctx.mark_dirty(PAGE_REGION);
+                    return Transition::None;
+                }
+                ActionEvent::Press(Action::Next) | ActionEvent::Repeat(Action::Next) => {
+                    let len = self.bookmarks.len();
+                    if len > 0 {
+                        let vis = self.bookmark_visible_lines();
+                        if self.bookmark_selected + 1 < len {
+                            self.bookmark_selected += 1;
+                        } else {
+                            self.bookmark_selected = 0;
+                            self.bookmark_scroll = 0;
+                        }
+                        if self.bookmark_selected >= self.bookmark_scroll + vis {
+                            self.bookmark_scroll = self.bookmark_selected + 1 - vis;
+                        }
+                        ctx.mark_dirty(PAGE_REGION);
+                    }
+                    return Transition::None;
+                }
+                ActionEvent::Press(Action::Prev) | ActionEvent::Repeat(Action::Prev) => {
+                    let len = self.bookmarks.len();
+                    if len > 0 {
+                        let vis = self.bookmark_visible_lines();
+                        if self.bookmark_selected > 0 {
+                            self.bookmark_selected -= 1;
+                        } else {
+                            self.bookmark_selected = len - 1;
+                            if self.bookmark_selected >= vis {
+                                self.bookmark_scroll = self.bookmark_selected + 1 - vis;
+                            }
+                        }
+                        if self.bookmark_selected < self.bookmark_scroll {
+                            self.bookmark_scroll = self.bookmark_selected;
+                        }
+                        ctx.mark_dirty(PAGE_REGION);
+                    }
+                    return Transition::None;
+                }
+                ActionEvent::Press(Action::Select) | ActionEvent::Press(Action::NextJump) => {
+                    let idx = self.bookmark_selected;
+                    self.jump_to_bookmark(idx, ctx);
+                    return Transition::None;
+                }
+                _ => return Transition::None,
+            }
+        }
+
         match event {
             ActionEvent::Press(Action::Back) => Transition::Pop,
             ActionEvent::LongPress(Action::Back) => Transition::Home,
@@ -1315,8 +2072,12 @@ impl App<AppId> for ReaderApp {
                 Transition::None
             }
 
-            // LongPress(Select): reserved for bookmark toggle (Phase 6)
-            // ActionEvent::LongPress(Action::Select) => { ... }
+            ActionEvent::LongPress(Action::Select) => {
+                if self.state == State::Ready {
+                    self.pending_bookmark_toggle = true;
+                }
+                Transition::None
+            }
             _ => Transition::None,
         }
     }
@@ -1361,6 +2122,9 @@ impl App<AppId> for ReaderApp {
                     ctx.mark_dirty(PAGE_REGION);
                 }
             }
+            QA_BOOKMARKS => {
+                self.pending_open_bookmarks = true;
+            }
             _ => {}
         }
     }
@@ -1368,6 +2132,20 @@ impl App<AppId> for ReaderApp {
     fn on_quick_cycle_update(&mut self, id: u8, value: u8, _ctx: &mut AppContext) {
         if id == QA_FONT_SIZE {
             self.book_font_size_idx = value;
+            self.pending_theme_persist = true;
+            self.apply_font_metrics();
+            if self.state == State::Ready {
+                if self.is_epub && self.epub.chapters_cached {
+                    self.state = State::NeedIndex;
+                } else {
+                    self.state = State::NeedPage;
+                }
+            }
+            self.rebuild_quick_actions();
+        } else if id == QA_THEME {
+            self.reading_theme_idx = value;
+            self.pending_theme_persist = true;
+            self.apply_theme_layout();
             self.apply_font_metrics();
             if self.state == State::Ready {
                 if self.is_epub && self.epub.chapters_cached {
@@ -1414,6 +2192,21 @@ impl App<AppId> for ReaderApp {
                 strip,
                 STATUS_REGION,
                 "Contents",
+                Alignment::CenterRight,
+                status_font,
+            );
+        } else if self.state == State::ShowBookmarks {
+            let mut sbuf = StackFmt::<32>::new();
+            let total = self.bookmarks.len();
+            if total > 0 {
+                let _ = write!(sbuf, "{}/{}", self.bookmark_selected + 1, total);
+            } else {
+                let _ = write!(sbuf, "Empty");
+            }
+            draw_chrome_text(
+                strip,
+                STATUS_REGION,
+                sbuf.as_str(),
                 Alignment::CenterRight,
                 status_font,
             );
@@ -1496,7 +2289,10 @@ impl App<AppId> for ReaderApp {
 
         // loading states: the kernel loading indicator (drawn by
         // AppManager) handles feedback text; nothing else to draw
-        if self.state != State::Ready && self.state != State::Error && self.state != State::ShowToc
+        if self.state != State::Ready
+            && self.state != State::Error
+            && self.state != State::ShowToc
+            && self.state != State::ShowBookmarks
         {
             return;
         }
@@ -1560,6 +2356,75 @@ impl App<AppId> for ReaderApp {
                     Text::new(entry.title_str(), Point::new(tx, y), style)
                         .draw(strip)
                         .unwrap();
+                }
+            }
+            return;
+        }
+
+        if self.state == State::ShowBookmarks {
+            let tx = self.text_margin as i32;
+            let ty = self.text_y as i32;
+            if self.fonts.is_some() {
+                let font = fonts::body_font(self.book_font_size_idx);
+                let line_h = font.line_height as i32;
+                let ascent = font.ascent as i32;
+                let vis_max = self.bookmark_visible_lines();
+                let visible =
+                    vis_max.min(self.bookmarks.len().saturating_sub(self.bookmark_scroll));
+                for i in 0..visible {
+                    let idx = self.bookmark_scroll + i;
+                    let bookmark = &self.bookmarks[idx];
+                    let y_top = ty + i as i32 * line_h;
+                    let baseline = y_top + ascent;
+                    let selected = idx == self.bookmark_selected;
+
+                    if selected {
+                        Rectangle::new(
+                            Point::new(0, y_top),
+                            Size::new(SCREEN_W as u32, line_h as u32),
+                        )
+                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
+                        .draw(strip)
+                        .unwrap();
+                    }
+
+                    let fg = if selected {
+                        BinaryColor::Off
+                    } else {
+                        BinaryColor::On
+                    };
+                    font.draw_str_fg(strip, &bookmark.display_label(), fg, tx, baseline);
+                }
+                if self.bookmarks.is_empty() {
+                    font.draw_str_fg(strip, "No bookmarks", BinaryColor::On, tx, ty + ascent);
+                }
+            } else {
+                let style = MonoTextStyle::new(&FONT_9X18, BinaryColor::On);
+                if self.bookmarks.is_empty() {
+                    Text::new("No bookmarks", Point::new(tx, ty + LINE_H as i32), style)
+                        .draw(strip)
+                        .unwrap();
+                } else {
+                    let vis_max = self.bookmark_visible_lines();
+                    let visible =
+                        vis_max.min(self.bookmarks.len().saturating_sub(self.bookmark_scroll));
+                    for i in 0..visible {
+                        let idx = self.bookmark_scroll + i;
+                        let bookmark = &self.bookmarks[idx];
+                        let y = ty + i as i32 * LINE_H as i32 + LINE_H as i32;
+                        let marker = if idx == self.bookmark_selected {
+                            "> "
+                        } else {
+                            "  "
+                        };
+                        Text::new(marker, Point::new(0, y), style)
+                            .draw(strip)
+                            .unwrap();
+                        let label = bookmark.display_label();
+                        Text::new(&label, Point::new(tx, y), style)
+                            .draw(strip)
+                            .unwrap();
+                    }
                 }
             }
             return;
@@ -1729,12 +2594,7 @@ impl App<AppId> for ReaderApp {
             } else if self.pg.fully_indexed {
                 let _ = write!(pbuf, "Pg {}/{}", self.pg.page + 1, self.pg.total_pages);
             } else {
-                let _ = write!(
-                    pbuf,
-                    "Pg {}  ({}%)",
-                    self.pg.page + 1,
-                    self.progress_pct()
-                );
+                let _ = write!(pbuf, "Pg {}  ({}%)", self.pg.page + 1, self.progress_pct());
             }
 
             POSITION_OVERLAY

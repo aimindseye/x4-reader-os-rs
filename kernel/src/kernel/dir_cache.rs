@@ -3,7 +3,7 @@
 
 use crate::drivers::sdcard::SdStorage;
 use crate::drivers::storage::{
-    DirEntry, DirPage, PULP_DIR, TITLES_FILE, list_root_files, read_file_start_in_dir,
+    DirEntry, DirPage, TITLES_FILE, X4_DIR, list_root_files, read_file_start_in_dir,
 };
 use crate::error::Result;
 
@@ -48,7 +48,7 @@ impl DirCache {
 
     fn load_titles(&mut self, sd: &SdStorage) {
         let mut buf = [0u8; 4096];
-        let n = match read_file_start_in_dir(sd, PULP_DIR, TITLES_FILE, &mut buf) {
+        let n = match read_file_start_in_dir(sd, X4_DIR, TITLES_FILE, &mut buf) {
             Ok((_, n)) => n,
             Err(_) => return,
         };

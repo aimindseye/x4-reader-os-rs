@@ -1,4 +1,4 @@
-// wifi upload server: HTTP file upload + mDNS (pulp.local)
+// wifi upload server: HTTP file upload + mDNS (x4.local)
 
 use alloc::string::String;
 use core::fmt::Write as FmtWrite;
@@ -48,7 +48,7 @@ const UPLOAD_PAGE: &[u8] = include_bytes!("../../assets/upload.html");
 
 const MDNS_PORT: u16 = 5353;
 
-// "pulp.local" in DNS wire format: length-prefixed labels + NUL
+// "x4.local" in DNS wire format: length-prefixed labels + NUL
 const HOSTNAME_WIRE: [u8; 12] = [
     4, b'p', b'u', b'l', b'p', //
     5, b'l', b'o', b'c', b'a', b'l', //
@@ -108,7 +108,7 @@ pub async fn run_upload_mode(
             &[
                 "No WiFi credentials!",
                 "Set wifi_ssid in",
-                "_PULP/SETTINGS.TXT",
+                "_x4/SETTINGS.TXT",
             ],
             Some("Press BACK to exit"),
             bumps,
@@ -277,7 +277,7 @@ pub async fn run_upload_mode(
     let ip_str = core::str::from_utf8(&ip_buf[..ip_len]).unwrap_or("???");
 
     info!(
-        "upload: serving at http://pulp.local/  ({})",
+        "upload: serving at http://x4.local/  ({})",
         core::str::from_utf8(&ip_buf[1..ip_len.saturating_sub(1)]).unwrap_or("?")
     );
 
@@ -287,7 +287,7 @@ pub async fn run_upload_mode(
         delay,
         heading,
         body,
-        &["http://pulp.local/", ip_str],
+        &["http://x4.local/", ip_str],
         Some("Press BACK to exit"),
         bumps,
         false,
@@ -872,11 +872,11 @@ async fn mdns_respond_once(stack: embassy_net::Stack<'_>, ip_octets: [u8; 4]) {
         Err(_) => return,
     };
 
-    if !is_mdns_query_for_pulp(&pkt[..n]) {
+    if !is_mdns_query_for_x4(&pkt[..n]) {
         return;
     }
 
-    info!("upload: mDNS query for pulp.local -- responding");
+    info!("upload: mDNS query for x4.local -- responding");
 
     let mut resp = [0u8; MDNS_RESPONSE_LEN];
     let len = build_mdns_response(&mut resp, ip_octets);
@@ -888,7 +888,7 @@ async fn mdns_respond_once(stack: embassy_net::Stack<'_>, ip_octets: [u8; 4]) {
     let _ = socket.send_to(&resp[..len], mdns_dest).await;
 }
 
-fn is_mdns_query_for_pulp(pkt: &[u8]) -> bool {
+fn is_mdns_query_for_x4(pkt: &[u8]) -> bool {
     if pkt.len() < 28 {
         return false;
     }
@@ -907,7 +907,7 @@ fn is_mdns_query_for_pulp(pkt: &[u8]) -> bool {
     if qname[0] != 4 || qname[5] != 5 || qname[11] != 0 {
         return false;
     }
-    if !qname[1..5].eq_ignore_ascii_case(b"pulp") {
+    if !qname[1..5].eq_ignore_ascii_case(b"x4") {
         return false;
     }
     if !qname[6..11].eq_ignore_ascii_case(b"local") {

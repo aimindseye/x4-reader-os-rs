@@ -1287,53 +1287,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pulp-kernel"
-version = "0.1.0"
-dependencies = [
- "critical-section",
- "embassy-executor",
- "embassy-futures",
- "embassy-sync 0.7.2",
- "embassy-time",
- "embedded-graphics",
- "embedded-graphics-core",
- "embedded-hal 1.0.0",
- "embedded-hal-async",
- "embedded-hal-bus",
- "embedded-sdmmc",
- "esp-alloc",
- "esp-hal",
- "log",
- "nb 1.1.0",
- "static_cell",
-]
-
-[[package]]
-name = "pulp-os"
-version = "0.1.0"
-dependencies = [
- "embassy-executor",
- "embassy-futures",
- "embassy-net",
- "embassy-time",
- "embedded-graphics",
- "embedded-graphics-core",
- "embedded-io-async 0.7.0",
- "esp-alloc",
- "esp-backtrace",
- "esp-bootloader-esp-idf",
- "esp-hal",
- "esp-println",
- "esp-radio",
- "esp-rtos",
- "fontdue",
- "log",
- "pulp-kernel",
- "smol-epub",
- "static_cell",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.44"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1738,6 +1691,53 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a5364e9d77fcdeeaa6062ced926ee3381faa2ee02d3eb83a5c27a8825540829"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "x4-kernel"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-sync 0.7.2",
+ "embassy-time",
+ "embedded-graphics",
+ "embedded-graphics-core",
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "embedded-hal-bus",
+ "embedded-sdmmc",
+ "esp-alloc",
+ "esp-hal",
+ "log",
+ "nb 1.1.0",
+ "static_cell",
+]
+
+[[package]]
+name = "x4-os"
+version = "0.1.0"
+dependencies = [
+ "embassy-executor",
+ "embassy-futures",
+ "embassy-net",
+ "embassy-time",
+ "embedded-graphics",
+ "embedded-graphics-core",
+ "embedded-io-async 0.7.0",
+ "esp-alloc",
+ "esp-backtrace",
+ "esp-bootloader-esp-idf",
+ "esp-hal",
+ "esp-println",
+ "esp-radio",
+ "esp-rtos",
+ "fontdue",
+ "log",
+ "smol-epub",
+ "static_cell",
+ "x4-kernel",
 ]
 
 [[package]]

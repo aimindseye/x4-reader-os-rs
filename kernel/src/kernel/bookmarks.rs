@@ -147,7 +147,7 @@ impl BmListEntry {
     }
 }
 
-// 16-slot LRU bookmark cache; flushed to _PULP/BKMK.BIN periodically
+// 16-slot LRU bookmark cache; flushed to _x4/BKMK.BIN periodically
 pub struct BookmarkCache {
     slots: [BookmarkSlot; SLOTS],
     count: usize, // slots present in file; new saves past this extend count
@@ -189,7 +189,7 @@ impl BookmarkCache {
     pub fn force_load(&mut self, sd: &SdStorage) {
         let mut buf = [0u8; FILE_LEN];
         let slot_count =
-            match storage::read_file_start_in_dir(sd, storage::PULP_DIR, BOOKMARK_FILE, &mut buf) {
+            match storage::read_file_start_in_dir(sd, storage::X4_DIR, BOOKMARK_FILE, &mut buf) {
                 Ok((_, n)) => (n / RECORD_LEN).min(SLOTS),
                 Err(_) => 0,
             };
@@ -382,7 +382,7 @@ impl BookmarkCache {
             buf[base..base + RECORD_LEN].copy_from_slice(&rec);
         }
 
-        match storage::write_file_in_dir(sd, storage::PULP_DIR, BOOKMARK_FILE, &buf[..file_len]) {
+        match storage::write_file_in_dir(sd, storage::X4_DIR, BOOKMARK_FILE, &buf[..file_len]) {
             Ok(_) => {
                 self.dirty = false;
                 log::info!("bookmarks: flushed {} slots to SD", self.count);

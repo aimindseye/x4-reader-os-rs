@@ -14,7 +14,7 @@ use crate::drivers::strip::StripBuffer;
 use crate::ui::{Alignment, Region};
 
 // re-export UTF-8 iterator from kernel util for convenience
-pub use pulp_kernel::util::Utf8Iter;
+pub use x4_kernel::util::Utf8Iter;
 
 pub const FIRST_CHAR: u8 = 0x20;
 pub const LAST_CHAR: u8 = 0x7E;
@@ -246,4 +246,4 @@ fn blit_glyph(
     );
 }
 
-// UTF-8 iteration is provided by pulp_kernel::util::Utf8Iter (re-exported above)
+// UTF-8 iteration is provided by x4_kernel::util::Utf8Iter (re-exported above)

@@ -54,7 +54,7 @@ impl<'k> KernelHandle<'k> {
     {
         let sd = &self.kernel.sd;
         let mut reader = |name: &str, offset: u32, buf: &mut [u8]| {
-            storage::read_chunk_in_pulp_subdir(sd, dir, name, offset, buf)
+            storage::read_chunk_in_x4_subdir(sd, dir, name, offset, buf)
                 .map_err(|e: Error| -> &'static str { e.into() })
         };
         f(&mut reader)
@@ -87,17 +87,17 @@ impl<'k> KernelHandle<'k> {
 
     #[inline]
     pub fn read_app_data_start(&mut self, name: &str, buf: &mut [u8]) -> Result<(u32, usize)> {
-        storage::read_file_start_in_dir(&self.kernel.sd, storage::PULP_DIR, name, buf)
+        storage::read_file_start_in_dir(&self.kernel.sd, storage::X4_DIR, name, buf)
     }
 
     #[inline]
     pub fn write_app_data(&mut self, name: &str, data: &[u8]) -> Result<()> {
-        storage::write_file_in_dir(&self.kernel.sd, storage::PULP_DIR, name, data)
+        storage::write_file_in_dir(&self.kernel.sd, storage::X4_DIR, name, data)
     }
 
     #[inline]
     pub fn ensure_app_subdir(&mut self, dir: &str) -> Result<()> {
-        storage::ensure_pulp_subdir(&self.kernel.sd, dir)
+        storage::ensure_x4_subdir(&self.kernel.sd, dir)
     }
 
     #[inline]
@@ -108,59 +108,59 @@ impl<'k> KernelHandle<'k> {
         offset: u32,
         buf: &mut [u8],
     ) -> Result<usize> {
-        storage::read_chunk_in_pulp_subdir(&self.kernel.sd, dir, name, offset, buf)
+        storage::read_chunk_in_x4_subdir(&self.kernel.sd, dir, name, offset, buf)
     }
 
     #[inline]
     pub fn write_app_subdir(&mut self, dir: &str, name: &str, data: &[u8]) -> Result<()> {
-        storage::write_in_pulp_subdir(&self.kernel.sd, dir, name, data)
+        storage::write_in_x4_subdir(&self.kernel.sd, dir, name, data)
     }
 
     #[inline]
     pub fn append_app_subdir(&mut self, dir: &str, name: &str, data: &[u8]) -> Result<()> {
-        storage::append_in_pulp_subdir(&self.kernel.sd, dir, name, data)
+        storage::append_in_x4_subdir(&self.kernel.sd, dir, name, data)
     }
 
     #[inline]
     pub fn file_size_app_subdir(&mut self, dir: &str, name: &str) -> Result<u32> {
-        storage::file_size_in_pulp_subdir(&self.kernel.sd, dir, name)
+        storage::file_size_in_x4_subdir(&self.kernel.sd, dir, name)
     }
 
     #[inline]
     pub fn delete_app_subdir(&mut self, dir: &str, name: &str) -> Result<()> {
-        storage::delete_in_pulp_subdir(&self.kernel.sd, dir, name)
+        storage::delete_in_x4_subdir(&self.kernel.sd, dir, name)
     }
 
-    // _PULP/ direct file ops (v3 unified cache files)
+    // _x4/ direct file ops (v3 unified cache files)
 
     #[inline]
     pub fn read_cache_chunk(&mut self, name: &str, offset: u32, buf: &mut [u8]) -> Result<usize> {
-        storage::read_chunk_in_pulp(&self.kernel.sd, name, offset, buf)
+        storage::read_chunk_in_x4(&self.kernel.sd, name, offset, buf)
     }
 
     #[inline]
     pub fn write_cache(&mut self, name: &str, data: &[u8]) -> Result<()> {
-        storage::write_in_pulp(&self.kernel.sd, name, data)
+        storage::write_in_x4(&self.kernel.sd, name, data)
     }
 
     #[inline]
     pub fn append_cache(&mut self, name: &str, data: &[u8]) -> Result<()> {
-        storage::append_in_pulp(&self.kernel.sd, name, data)
+        storage::append_in_x4(&self.kernel.sd, name, data)
     }
 
     #[inline]
     pub fn write_cache_at(&mut self, name: &str, offset: u32, data: &[u8]) -> Result<()> {
-        storage::write_at_in_pulp(&self.kernel.sd, name, offset, data)
+        storage::write_at_in_x4(&self.kernel.sd, name, offset, data)
     }
 
     #[inline]
     pub fn delete_cache(&mut self, name: &str) -> Result<()> {
-        storage::delete_in_pulp(&self.kernel.sd, name)
+        storage::delete_in_x4(&self.kernel.sd, name)
     }
 
     #[inline]
     pub fn cache_file_size(&mut self, name: &str) -> Result<u32> {
-        storage::file_size_in_pulp(&self.kernel.sd, name)
+        storage::file_size_in_x4(&self.kernel.sd, name)
     }
 
     // root directory file deletion

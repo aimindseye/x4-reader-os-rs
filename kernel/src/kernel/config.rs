@@ -1,4 +1,4 @@
-// system configuration: key=value text in _PULP/SETTINGS.TXT
+// system configuration: key=value text in _x4/SETTINGS.TXT
 //
 // SystemSettings and WifiConfig are kernel-owned configuration;
 // the SettingsApp in apps/ provides the UI for editing them
@@ -306,7 +306,7 @@ impl<'a> TxtWriter<'a> {
 
 pub fn write_settings_txt(s: &SystemSettings, w: &WifiConfig, buf: &mut [u8]) -> usize {
     let mut wr = TxtWriter::new(buf);
-    wr.put(b"# pulp-os settings\n");
+    wr.put(b"# x4-os settings\n");
     wr.put(b"# lines starting with # are ignored\n\n");
 
     wr.put(b"# power settings\n");

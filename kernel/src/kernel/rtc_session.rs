@@ -10,7 +10,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
-// magic value to validate RTC session data: "PLPS" (PuLP Session)
+// magic value to validate RTC session data: "PLPS" (x4 Session)
 const RTC_SESSION_MAGIC: u32 = 0x504C5053;
 
 // max navigation stack depth (must match app::MAX_STACK_DEPTH)

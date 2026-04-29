@@ -11,29 +11,29 @@ use esp_hal::interrupt::software::SoftwareInterruptControl;
 use esp_hal::ram;
 use esp_hal::timer::timg::TimerGroup;
 use log::info;
-use pulp_os::app::AppShell;
-use pulp_os::apps::files::FilesApp;
-use pulp_os::apps::home::HomeApp;
-use pulp_os::apps::manager::AppManager;
-use pulp_os::apps::reader::ReaderApp;
-use pulp_os::apps::settings::SettingsApp;
-use pulp_os::apps::widgets::{ButtonFeedback, QuickMenu};
-use pulp_os::apps::Launcher;
-use pulp_os::board::action::ButtonMapper;
-use pulp_os::board::{speed_up_spi, Board};
-use pulp_os::drivers::battery;
-use pulp_os::drivers::input::InputDriver;
-use pulp_os::drivers::sdcard::SdStorage;
-use pulp_os::drivers::storage;
-use pulp_os::drivers::strip::StripBuffer;
-use pulp_os::kernel::dir_cache::DirCache;
-use pulp_os::kernel::tasks;
-use pulp_os::kernel::work_queue;
-use pulp_os::kernel::BookmarkCache;
-use pulp_os::kernel::BootConsole;
-use pulp_os::kernel::Kernel;
-use pulp_os::ui::paint_stack;
 use static_cell::{ConstStaticCell, StaticCell};
+use x4_os::app::AppShell;
+use x4_os::apps::Launcher;
+use x4_os::apps::files::FilesApp;
+use x4_os::apps::home::HomeApp;
+use x4_os::apps::manager::AppManager;
+use x4_os::apps::reader::ReaderApp;
+use x4_os::apps::settings::SettingsApp;
+use x4_os::apps::widgets::{ButtonFeedback, QuickMenu};
+use x4_os::board::action::ButtonMapper;
+use x4_os::board::{Board, speed_up_spi};
+use x4_os::drivers::battery;
+use x4_os::drivers::input::InputDriver;
+use x4_os::drivers::sdcard::SdStorage;
+use x4_os::drivers::storage;
+use x4_os::drivers::strip::StripBuffer;
+use x4_os::kernel::BookmarkCache;
+use x4_os::kernel::BootConsole;
+use x4_os::kernel::Kernel;
+use x4_os::kernel::dir_cache::DirCache;
+use x4_os::kernel::tasks;
+use x4_os::kernel::work_queue;
+use x4_os::ui::paint_stack;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -71,7 +71,7 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     info!("app shell initialised: {:?}", app_shell.screen());
 
     let mut console = alloc::boxed::Box::new(BootConsole::new());
-    console.push("pulp-os 0.1.0");
+    console.push("x4-os 0.1.0");
     console.push("esp32c3 rv32imc 160mhz");
     console.push("heap: 172K (108K + 64K reclaimed)");
     console.push("app shell: home/browser/reader scaffold");
@@ -119,9 +119,9 @@ async fn main(spawner: embassy_executor::Spawner) -> ! {
     let sd_ok = sd.probe_ok();
     if sd_ok {
         console.push("sd: fat32 mounted");
-        if let Err(e) = storage::ensure_pulp_dir_async(&sd).await {
-            console.push("sd: pulp dir failed");
-            log::warn!("ensure_pulp_dir: {:?}", e);
+        if let Err(e) = storage::ensure_x4_dir_async(&sd).await {
+            console.push("sd: x4 dir failed");
+            log::warn!("ensure_X4_DIR: {:?}", e);
         }
     }
 

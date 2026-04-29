@@ -357,7 +357,7 @@ impl ReaderApp {
     }
 }
 
-// UTF-8 decoding is provided by pulp_kernel::util::decode_utf8_char
+// UTF-8 decoding is provided by x4_kernel::util::decode_utf8_char
 // (re-exported via super::decode_utf8_char)
 
 pub(super) fn trim_trailing_cr(buf: &[u8], start: usize, end: usize) -> usize {

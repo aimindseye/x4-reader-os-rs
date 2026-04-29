@@ -132,7 +132,6 @@ impl FilesApp {
         self.total
     }
 
-
     pub fn shell_entries(&self) -> Vec<BrowserEntry> {
         let mut out = Vec::with_capacity(self.count);
         for entry in self.entries[..self.count].iter() {
@@ -145,16 +144,16 @@ impl FilesApp {
         }
         out
     }
-pub fn selected_shell_entry(&self) -> Option<BrowserEntry> {
-    self.selected_entry().map(|entry| {
-        let label = entry.display_name();
-        if entry.is_dir {
-            BrowserEntry::directory(label)
-        } else {
-            BrowserEntry::file(label)
-        }
-    })
-}
+    pub fn selected_shell_entry(&self) -> Option<BrowserEntry> {
+        self.selected_entry().map(|entry| {
+            let label = entry.display_name();
+            if entry.is_dir {
+                BrowserEntry::directory(label)
+            } else {
+                BrowserEntry::file(label)
+            }
+        })
+    }
     pub fn restore_state(&mut self, scroll: usize, selected: usize, total: usize) {
         self.scroll = scroll;
         self.selected = selected;
@@ -509,10 +508,14 @@ impl App<AppId> for FilesApp {
         }
 
         if self.count == 0 && !self.needs_load {
-            BitmapLabel::new(self.row_region(0), "No files on SD card", self.ui_fonts.body)
-                .alignment(Alignment::CenterLeft)
-                .draw(strip)
-                .unwrap();
+            BitmapLabel::new(
+                self.row_region(0),
+                "No files on SD card",
+                self.ui_fonts.body,
+            )
+            .alignment(Alignment::CenterLeft)
+            .draw(strip)
+            .unwrap();
             return;
         }
 

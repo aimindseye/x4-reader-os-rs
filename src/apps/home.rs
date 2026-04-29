@@ -1,16 +1,17 @@
 // launcher screen: menu, bookmarks browser
 
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write as _;
 
 use crate::app::HomeMenuItem;
+use crate::apps::reader_state;
 use crate::apps::{App, AppContext, AppId, RECENT_FILE, Transition};
 use crate::board::action::{Action, ActionEvent};
 use crate::board::{SCREEN_H, SCREEN_W};
 use crate::drivers::strip::StripBuffer;
 use crate::fonts;
 use crate::kernel::KernelHandle;
-use crate::kernel::bookmarks::{self, BmListEntry};
 use crate::ui::{
     Alignment, BitmapDynLabel, BitmapLabel, CONTENT_TOP, FULL_CONTENT_W, HEADER_W, LARGE_MARGIN,
     Region, SECTION_GAP, TITLE_Y_OFFSET,
@@ -26,13 +27,19 @@ const TITLE_ITEM_GAP: u16 = 20;
 const RECENT_PREVIEW_GAP: u16 = 10;
 
 const MAX_ITEMS: usize = 5;
+const RECENT_BUF_LEN: usize = 160;
 
 // bookmark list layout (matches Files app)
+// bookmark-ui-v7: group same-book bookmarks under one title to avoid row clipping.
 const BM_ROW_H: u16 = 52;
 const BM_ROW_GAP: u16 = 4;
 const BM_ROW_STRIDE: u16 = BM_ROW_H + BM_ROW_GAP;
 const BM_TITLE_Y: u16 = CONTENT_TOP + TITLE_Y_OFFSET;
 const BM_HEADER_LIST_GAP: u16 = SECTION_GAP;
+const BM_BOOK_TITLE_GAP: u16 = 6;
+const BM_MAX_TITLE_CHARS: usize = 34;
+const BM_MAX_MIXED_TITLE_CHARS: usize = 16;
+const BM_MAX_ROW_CHARS: usize = 42;
 const BM_STATUS_W: u16 = 144;
 const BM_STATUS_X: u16 = SCREEN_W - LARGE_MARGIN - BM_STATUS_W;
 
@@ -79,11 +86,11 @@ pub struct HomeApp {
     item_regions: [Region; MAX_ITEMS],
     item_count: usize,
 
-    recent_book: [u8; 32],
+    recent_book: [u8; RECENT_BUF_LEN],
     recent_book_len: usize,
     needs_load_recent: bool,
 
-    bm_entries: [BmListEntry; bookmarks::SLOTS],
+    bm_entries: Vec<reader_state::BookmarkIndexRecord>,
     bm_count: usize,
     bm_selected: usize,
     bm_scroll: usize,
@@ -105,10 +112,10 @@ impl HomeApp {
             ui_fonts: uf,
             item_regions: compute_item_regions(uf.heading.line_height, uf.body.line_height, false),
             item_count: 4, // updated after load; may include Continue
-            recent_book: [0u8; 32],
+            recent_book: [0u8; RECENT_BUF_LEN],
             recent_book_len: 0,
             needs_load_recent: false,
-            bm_entries: [BmListEntry::EMPTY; bookmarks::SLOTS],
+            bm_entries: Vec::new(),
             bm_count: 0,
             bm_selected: 0,
             bm_scroll: 0,
@@ -178,17 +185,53 @@ impl HomeApp {
         );
     }
 
-    pub fn load_recent(&mut self, k: &mut KernelHandle<'_>) {
+    fn load_recent_record_from_state(&mut self, k: &mut KernelHandle<'_>) -> bool {
+        let mut buf = [0u8; 160];
+        let size = match k.read_app_subdir_chunk(
+            reader_state::STATE_DIR,
+            reader_state::RECENT_RECORD_FILE,
+            0,
+            &mut buf,
+        ) {
+            Ok(n) if n > 0 => n,
+            _ => return false,
+        };
+
+        let text = match core::str::from_utf8(&buf[..size]) {
+            Ok(s) => s.trim(),
+            Err(_) => return false,
+        };
+
+        if text.is_empty() {
+            return false;
+        }
+
+        let bytes = text.as_bytes();
+        let n = bytes.len().min(self.recent_book.len());
+        self.recent_book[..n].copy_from_slice(&bytes[..n]);
+        self.recent_book_len = n;
+        true
+    }
+
+    fn load_recent_legacy(&mut self, k: &mut KernelHandle<'_>) -> bool {
         let mut buf = [0u8; 32];
         match k.read_app_data_start(RECENT_FILE, &mut buf) {
             Ok((_, n)) if n > 0 => {
                 let n = n.min(32);
                 self.recent_book[..n].copy_from_slice(&buf[..n]);
                 self.recent_book_len = n;
+                true
             }
             _ => {
                 self.recent_book_len = 0;
+                false
             }
+        }
+    }
+
+    pub fn load_recent(&mut self, k: &mut KernelHandle<'_>) {
+        if !self.load_recent_record_from_state(k) {
+            let _ = self.load_recent_legacy(k);
         }
         self.rebuild_item_count();
         self.refresh_menu_layout();
@@ -218,6 +261,65 @@ impl HomeApp {
         self.recent_book_bytes()
             .and_then(|bytes| core::str::from_utf8(bytes).ok())
             .filter(|s| !s.is_empty())
+    }
+
+    pub fn recent_record(&self) -> Option<reader_state::RecentBookRecord> {
+        self.recent_book_str()
+            .and_then(reader_state::RecentBookRecord::decode_line)
+    }
+
+    pub fn recent_book_id(&self) -> Option<alloc::string::String> {
+        self.recent_record()
+            .map(|rec| rec.book_id.0)
+            .or_else(|| self.recent_book_str().map(reader_state::fingerprint_path))
+    }
+
+    pub fn recent_source_path(&self) -> Option<alloc::string::String> {
+        self.recent_record()
+            .map(|rec| rec.source_path)
+            .or_else(|| self.recent_book_str().map(String::from))
+    }
+
+    fn recent_preview_text(&self) -> Option<String> {
+        if let Some(rec) = self.recent_record() {
+            let title = rec.display_title.trim();
+            if !title.is_empty() {
+                return Some(String::from(title));
+            }
+
+            let path = rec.source_path.trim();
+            if !path.is_empty() {
+                return Some(String::from(Self::basename(path)));
+            }
+        }
+
+        self.recent_book_str().and_then(|raw| {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+
+            if trimmed.contains('|') {
+                let mut parts = trimmed.split('|');
+                let _ = parts.next();
+                let source_path = parts.next().unwrap_or("").trim();
+                let display_title = parts.next().unwrap_or("").trim();
+
+                if !display_title.is_empty() {
+                    Some(String::from(display_title))
+                } else if !source_path.is_empty() {
+                    Some(String::from(Self::basename(source_path)))
+                } else {
+                    None
+                }
+            } else {
+                Some(String::from(Self::basename(trimmed)))
+            }
+        })
+    }
+
+    fn basename(path: &str) -> &str {
+        path.rsplit('/').next().unwrap_or(path)
     }
 
     pub fn shell_menu_items(&self) -> Vec<HomeMenuItem> {
@@ -283,14 +385,96 @@ impl HomeApp {
         }
     }
 
+    fn bm_group_title(&self) -> Option<&str> {
+        let first = self.bm_entries.first()?;
+        let first_id = first.book_id.as_str();
+
+        if self
+            .bm_entries
+            .iter()
+            .all(|entry| entry.book_id.as_str() == first_id)
+        {
+            let title = first.display_title.trim();
+            if !title.is_empty() {
+                Some(title)
+            } else {
+                Some(Self::basename(&first.source_path))
+            }
+        } else {
+            None
+        }
+    }
+
+    fn ellipsize_ascii(s: &str, max_chars: usize) -> String {
+        let trimmed = s.trim();
+        let mut out = String::new();
+        let mut chars = trimmed.chars();
+
+        for _ in 0..max_chars {
+            match chars.next() {
+                Some(ch) => out.push(ch),
+                None => return out,
+            }
+        }
+
+        if chars.next().is_some() && max_chars > 3 {
+            for _ in 0..3 {
+                out.pop();
+            }
+            out.push_str("...");
+        }
+
+        out
+    }
+
+    fn bm_detail_label(entry: &reader_state::BookmarkIndexRecord) -> String {
+        let detail = entry.label.trim();
+        if !detail.is_empty() {
+            return Self::ellipsize_ascii(detail, BM_MAX_ROW_CHARS);
+        }
+
+        let mut out = String::new();
+        let _ = write!(out, "Ch {}", u32::from(entry.chapter) + 1);
+        if entry.byte_offset > 0 {
+            let _ = write!(out, " · Off {}", entry.byte_offset);
+        }
+        out
+    }
+
+    fn bm_mixed_book_label(entry: &reader_state::BookmarkIndexRecord) -> String {
+        let title = if !entry.display_title.trim().is_empty() {
+            entry.display_title.trim()
+        } else {
+            Self::basename(&entry.source_path)
+        };
+
+        let mut out = Self::ellipsize_ascii(title, BM_MAX_MIXED_TITLE_CHARS);
+        out.push_str(" · ");
+        out.push_str(&Self::bm_detail_label(entry));
+        Self::ellipsize_ascii(&out, BM_MAX_ROW_CHARS)
+    }
+
+    fn bm_subtitle_region(&self) -> Region {
+        Region::new(
+            LARGE_MARGIN,
+            BM_TITLE_Y + self.ui_fonts.heading.line_height + BM_BOOK_TITLE_GAP,
+            FULL_CONTENT_W,
+            self.ui_fonts.body.line_height,
+        )
+    }
+
     fn bm_list_y(&self) -> u16 {
-        BM_TITLE_Y + self.ui_fonts.heading.line_height + BM_HEADER_LIST_GAP
+        let mut y = BM_TITLE_Y + self.ui_fonts.heading.line_height + BM_HEADER_LIST_GAP;
+        if self.bm_group_title().is_some() {
+            y += self.ui_fonts.body.line_height + BM_BOOK_TITLE_GAP;
+        }
+        y
     }
 
     fn bm_visible_lines(&self) -> usize {
         let available = SCREEN_H.saturating_sub(self.bm_list_y());
         let rows = (available / BM_ROW_STRIDE) as usize;
-        rows.max(1).min(bookmarks::SLOTS)
+        rows.max(1).min(64)
     }
 
     fn bm_row_region(&self, i: usize) -> Region {
@@ -304,11 +488,17 @@ impl HomeApp {
 
     fn bm_list_region(&self) -> Region {
         let vis = self.bm_visible_lines();
+        let subtitle_extra = if self.bm_group_title().is_some() {
+            self.ui_fonts.body.line_height + BM_BOOK_TITLE_GAP
+        } else {
+            0
+        };
+
         Region::new(
             LARGE_MARGIN,
-            self.bm_list_y(),
+            BM_TITLE_Y + self.ui_fonts.heading.line_height + BM_BOOK_TITLE_GAP,
             FULL_CONTENT_W,
-            BM_ROW_STRIDE * vis as u16,
+            subtitle_extra + BM_ROW_STRIDE * vis as u16,
         )
     }
 
@@ -336,6 +526,8 @@ impl App<AppId> for HomeApp {
         ctx.clear_message();
         self.state = HomeState::Menu;
         self.selected = 0;
+        self.needs_load_recent = true;
+        self.needs_load_bookmarks = true;
         ctx.mark_dirty(CONTENT_REGION);
     }
 
@@ -343,22 +535,15 @@ impl App<AppId> for HomeApp {
         self.state = HomeState::Menu;
         self.selected = 0;
         self.needs_load_recent = true;
+        self.needs_load_bookmarks = true;
         ctx.mark_dirty(CONTENT_REGION);
     }
 
     async fn background(&mut self, ctx: &mut AppContext, k: &mut KernelHandle<'_>) {
         if self.needs_load_recent {
             let old_count = self.item_count;
-            let mut buf = [0u8; 32];
-            match k.read_app_data_start(RECENT_FILE, &mut buf) {
-                Ok((_, n)) if n > 0 => {
-                    let n = n.min(32);
-                    self.recent_book[..n].copy_from_slice(&buf[..n]);
-                    self.recent_book_len = n;
-                }
-                _ => {
-                    self.recent_book_len = 0;
-                }
+            if !self.load_recent_record_from_state(k) {
+                let _ = self.load_recent_legacy(k);
             }
             self.rebuild_item_count();
             self.needs_load_recent = false;
@@ -370,25 +555,44 @@ impl App<AppId> for HomeApp {
         }
 
         if self.needs_load_bookmarks {
-            self.bm_count = k.bookmark_cache().load_all(&mut self.bm_entries);
-            // resolve titles from dir cache
-            let _ = k.ensure_dir_cache_loaded();
-            for i in 0..self.bm_count {
-                let entry = &self.bm_entries[i];
-                let fname = &entry.filename[..entry.name_len as usize];
-                if let Some((title, len)) = k.dir_cache_mut().find_title(fname) {
-                    let mut tbuf = [0u8; 96];
-                    let n = (len as usize).min(96);
-                    tbuf[..n].copy_from_slice(&title[..n]);
-                    self.bm_entries[i].set_title(&tbuf[..n]);
-                } else {
-                    // inline humanize: lowercase all-upper SFN filenames
-                    humanize_bm_entry(&mut self.bm_entries[i]);
+            let mut buf = [0u8; 4096];
+            self.bm_entries.clear();
+
+            if let Ok(n) = k.read_app_subdir_chunk(
+                reader_state::STATE_DIR,
+                reader_state::BOOKMARKS_INDEX_FILE,
+                0,
+                &mut buf,
+            ) {
+                if n > 0 {
+                    if let Ok(payload) = core::str::from_utf8(&buf[..n]) {
+                        self.bm_entries = reader_state::decode_bookmarks_index(payload);
+                    }
                 }
             }
+
+            self.bm_count = self.bm_entries.len();
+            log::info!(
+                "bookmark-fix-v6: home loaded {} item(s) from global bookmark index",
+                self.bm_count
+            );
+            if self.bm_count == 0 {
+                self.bm_selected = 0;
+                self.bm_scroll = 0;
+            } else {
+                if self.bm_selected >= self.bm_count {
+                    self.bm_selected = self.bm_count - 1;
+                }
+                let vis = self.bm_visible_lines();
+                if self.bm_scroll + vis <= self.bm_selected {
+                    self.bm_scroll = self.bm_selected.saturating_sub(vis.saturating_sub(1));
+                }
+            }
+
             self.needs_load_bookmarks = false;
             if self.state == HomeState::ShowBookmarks {
                 ctx.mark_dirty(self.bm_list_region());
+                ctx.mark_dirty(self.bm_status_region());
             }
         }
     }
@@ -421,7 +625,9 @@ impl HomeApp {
             }
             ActionEvent::Press(Action::Select) => match self.item_action(self.selected) {
                 MenuAction::Continue => {
-                    if self.has_recent() {
+                    if let Some(rec) = self.recent_record() {
+                        ctx.set_message(rec.source_path.as_bytes());
+                    } else if self.has_recent() {
                         ctx.set_message(&self.recent_book[..self.recent_book_len]);
                     }
                     Transition::Push(AppId::Reader)
@@ -523,7 +729,15 @@ impl HomeApp {
             ActionEvent::Press(Action::Select) => {
                 if self.bm_count > 0 && self.bm_selected < self.bm_count {
                     let slot = &self.bm_entries[self.bm_selected];
-                    ctx.set_message(&slot.filename[..slot.name_len as usize]);
+                    log::info!(
+                        "bookmark-fix-v6: home bookmark selected idx={} ch={} off={} label={}",
+                        self.bm_selected,
+                        slot.chapter,
+                        slot.byte_offset,
+                        slot.display_label()
+                    );
+                    let jump = slot.jump_message();
+                    ctx.set_message(jump.as_bytes());
                     self.state = HomeState::Menu;
                     Transition::Push(AppId::Reader)
                 } else {
@@ -549,7 +763,7 @@ impl HomeApp {
             .draw(strip)
             .unwrap();
 
-        if let Some(recent) = self.recent_book_str() {
+        if let Some(recent) = self.recent_preview_text() {
             let mut preview =
                 BitmapDynLabel::<48>::new(self.recent_preview_region(), self.ui_fonts.body)
                     .alignment(Alignment::Center);
@@ -587,11 +801,29 @@ impl HomeApp {
         }
 
         if self.bm_count == 0 {
-            BitmapLabel::new(self.bm_row_region(0), "No bookmarks yet", self.ui_fonts.body)
-                .alignment(Alignment::CenterLeft)
-                .draw(strip)
-                .unwrap();
+            BitmapLabel::new(
+                self.bm_row_region(0),
+                "No bookmarks yet",
+                self.ui_fonts.body,
+            )
+            .alignment(Alignment::CenterLeft)
+            .draw(strip)
+            .unwrap();
             return;
+        }
+
+        let grouped_title = self.bm_group_title();
+
+        if let Some(title) = grouped_title {
+            let subtitle_text = Self::ellipsize_ascii(title, BM_MAX_TITLE_CHARS);
+            BitmapLabel::new(
+                self.bm_subtitle_region(),
+                &subtitle_text,
+                self.ui_fonts.body,
+            )
+            .alignment(Alignment::CenterLeft)
+            .draw(strip)
+            .unwrap();
         }
 
         let vis = self.bm_visible_lines();
@@ -602,9 +834,13 @@ impl HomeApp {
             if i < visible {
                 let idx = self.bm_scroll + i;
                 let entry = &self.bm_entries[idx];
-                let name = entry.display_name();
+                let label = if grouped_title.is_some() {
+                    Self::bm_detail_label(entry)
+                } else {
+                    Self::bm_mixed_book_label(entry)
+                };
 
-                BitmapLabel::new(region, name, self.ui_fonts.body)
+                BitmapLabel::new(region, &label, self.ui_fonts.body)
                     .alignment(Alignment::CenterLeft)
                     .inverted(idx == self.bm_selected)
                     .draw(strip)
@@ -612,29 +848,4 @@ impl HomeApp {
             }
         }
     }
-}
-
-// humanize an all-uppercase SFN bookmark filename into the title field
-fn humanize_bm_entry(entry: &mut BmListEntry) {
-    let nlen = entry.name_len as usize;
-    if nlen == 0 || entry.title_len > 0 {
-        return;
-    }
-    let src = &entry.filename[..nlen];
-    let all_upper = src.iter().all(|&b| !b.is_ascii_lowercase());
-    if !all_upper {
-        return;
-    }
-    let n = nlen.min(entry.title.len());
-    let dot_pos = src.iter().position(|&b| b == b'.').unwrap_or(n);
-    for i in 0..n {
-        entry.title[i] = if i == 0 {
-            src[i]
-        } else if i > dot_pos {
-            src[i].to_ascii_lowercase()
-        } else {
-            src[i].to_ascii_lowercase()
-        };
-    }
-    entry.title_len = n as u8;
 }

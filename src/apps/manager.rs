@@ -4,13 +4,13 @@
 // loading indicator is drawn between app content and overlays so it
 // sits on top of page content but under quick menu and button bumps
 
+use crate::app::{AppScreen, AppShell};
 use crate::apps::files::FilesApp;
 use crate::apps::home::HomeApp;
 use crate::apps::reader::ReaderApp;
 use crate::apps::settings::SettingsApp;
-use crate::apps::{App, AppContext, AppId, Launcher, PendingSetting, Redraw, Transition};
-use crate::app::{AppScreen, AppShell, ReaderSession};
 use crate::apps::widgets::button_feedback::LabelMode;
+use crate::apps::{App, AppContext, AppId, Launcher, PendingSetting, Redraw, Transition};
 use esp_hal::delay::Delay;
 
 use crate::apps::widgets::quick_menu::{MAX_APP_ACTIONS, QuickMenuResult};
@@ -180,11 +180,12 @@ impl AppManager {
             return;
         }
 
-        self.app_shell.update_reader_progress(
+        self.app_shell.update_reader_progress_with_offset(
             filename,
             self.reader.page() as u32,
             self.reader.chapter(),
             self.reader.is_epub(),
+            self.reader.byte_offset(),
         );
     }
 
@@ -197,7 +198,7 @@ impl AppManager {
     }
 
     fn seed_reader_handoff_from_home(&mut self) {
-        if let Some(path) = self.home.recent_book_str() {
+        if let Some(path) = self.home.recent_source_path() {
             let is_epub = path.as_bytes().ends_with(b".epub");
             self.app_shell.begin_reader_handoff(path, is_epub);
         }
@@ -538,6 +539,10 @@ impl AppManager {
             log::info!("app: {:?} -> {:?}", nav.from, nav.to);
 
             if nav.from != AppId::Upload {
+                if nav.from == AppId::Reader {
+                    self.reader.persist_progress_records(k);
+                }
+
                 with_app!(nav.from, self, |app| {
                     app.save_state(k.bookmark_cache_mut());
                     if nav.suspend {

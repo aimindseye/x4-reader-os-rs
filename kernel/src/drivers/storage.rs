@@ -14,7 +14,7 @@ use embedded_sdmmc::Mode;
 use crate::drivers::sdcard::{SdStorage, SdStorageInner, poll_once};
 use crate::error::{Error, ErrorKind};
 
-pub const PULP_DIR: &str = "_PULP";
+pub const X4_DIR: &str = "_x4";
 pub const TITLES_FILE: &str = "TITLES.BIN";
 pub const TITLE_CAP: usize = 64;
 
@@ -497,29 +497,29 @@ pub fn read_file_start_in_dir(
 
 // async boot path (runs inside the real executor)
 
-pub async fn ensure_pulp_dir_async(sd: &SdStorage) -> crate::error::Result<()> {
+pub async fn ensure_x4_dir_async(sd: &SdStorage) -> crate::error::Result<()> {
     let mut guard = borrow(sd)?;
     let inner = &mut *guard;
 
-    if let Ok(dir) = inner.mgr.open_dir(inner.root, PULP_DIR).await {
+    if let Ok(dir) = inner.mgr.open_dir(inner.root, X4_DIR).await {
         let _ = inner.mgr.close_dir(dir);
         return Ok(());
     }
-    match inner.mgr.make_dir_in_dir(inner.root, PULP_DIR).await {
+    match inner.mgr.make_dir_in_dir(inner.root, X4_DIR).await {
         Ok(()) => Ok(()),
         Err(embedded_sdmmc::Error::DirAlreadyExists) => Ok(()),
-        Err(_) => Err(Error::new(ErrorKind::WriteFailed, "ensure_pulp_dir_async")),
+        Err(_) => Err(Error::new(ErrorKind::WriteFailed, "ensure_x4_dir_async")),
     }
 }
 
-// _PULP subdirectory operations
+// _x4 subdirectory operations
 
-pub fn ensure_pulp_subdir(sd: &SdStorage, name: &str) -> crate::error::Result<()> {
+pub fn ensure_x4_subdir(sd: &SdStorage, name: &str) -> crate::error::Result<()> {
     let exists = poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_dir!(inner, PULP_DIR, |pulp_h| {
-            match inner.mgr.open_dir(pulp_h, name).await {
+        in_dir!(inner, X4_DIR, |x4_h| {
+            match inner.mgr.open_dir(x4_h, name).await {
                 Ok(sub) => {
                     let _ = inner.mgr.close_dir(sub);
                     Ok::<_, Error>(true)
@@ -536,17 +536,17 @@ pub fn ensure_pulp_subdir(sd: &SdStorage, name: &str) -> crate::error::Result<()
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_dir!(inner, PULP_DIR, |pulp_h| {
-            match inner.mgr.make_dir_in_dir(pulp_h, name).await {
+        in_dir!(inner, X4_DIR, |x4_h| {
+            match inner.mgr.make_dir_in_dir(x4_h, name).await {
                 Ok(()) => Ok::<_, Error>(()),
                 Err(embedded_sdmmc::Error::DirAlreadyExists) => Ok(()),
-                Err(_) => Err(Error::new(ErrorKind::WriteFailed, "ensure_pulp_subdir")),
+                Err(_) => Err(Error::new(ErrorKind::WriteFailed, "ensure_x4_subdir")),
             }
         })
     })
 }
 
-pub fn write_in_pulp_subdir(
+pub fn write_in_x4_subdir(
     sd: &SdStorage,
     dir: &str,
     name: &str,
@@ -555,13 +555,13 @@ pub fn write_in_pulp_subdir(
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_subdir!(inner, PULP_DIR, dir, |sub_h| op_write!(
+        in_subdir!(inner, X4_DIR, dir, |sub_h| op_write!(
             inner, sub_h, name, data
         ))
     })
 }
 
-pub fn append_in_pulp_subdir(
+pub fn append_in_x4_subdir(
     sd: &SdStorage,
     dir: &str,
     name: &str,
@@ -570,13 +570,13 @@ pub fn append_in_pulp_subdir(
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_subdir!(inner, PULP_DIR, dir, |sub_h| op_append!(
+        in_subdir!(inner, X4_DIR, dir, |sub_h| op_append!(
             inner, sub_h, name, data
         ))
     })
 }
 
-pub fn read_chunk_in_pulp_subdir(
+pub fn read_chunk_in_x4_subdir(
     sd: &SdStorage,
     dir: &str,
     name: &str,
@@ -586,37 +586,33 @@ pub fn read_chunk_in_pulp_subdir(
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_subdir!(inner, PULP_DIR, dir, |sub_h| op_read_chunk!(
+        in_subdir!(inner, X4_DIR, dir, |sub_h| op_read_chunk!(
             inner, sub_h, name, offset, buf
         ))
     })
 }
 
-pub fn file_size_in_pulp_subdir(
-    sd: &SdStorage,
-    dir: &str,
-    name: &str,
-) -> crate::error::Result<u32> {
+pub fn file_size_in_x4_subdir(sd: &SdStorage, dir: &str, name: &str) -> crate::error::Result<u32> {
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_subdir!(inner, PULP_DIR, dir, |sub_h| op_file_size!(
+        in_subdir!(inner, X4_DIR, dir, |sub_h| op_file_size!(
             inner, sub_h, name
         ))
     })
 }
 
-pub fn delete_in_pulp_subdir(sd: &SdStorage, dir: &str, name: &str) -> crate::error::Result<()> {
+pub fn delete_in_x4_subdir(sd: &SdStorage, dir: &str, name: &str) -> crate::error::Result<()> {
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_subdir!(inner, PULP_DIR, dir, |sub_h| op_delete!(inner, sub_h, name))
+        in_subdir!(inner, X4_DIR, dir, |sub_h| op_delete!(inner, sub_h, name))
     })
 }
 
-// _PULP/ direct file operations (cache files live directly in _PULP/)
+// _x4/ direct file operations (cache files live directly in _x4/)
 
-pub fn read_chunk_in_pulp(
+pub fn read_chunk_in_x4(
     sd: &SdStorage,
     name: &str,
     offset: u32,
@@ -625,49 +621,47 @@ pub fn read_chunk_in_pulp(
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_dir!(inner, PULP_DIR, |dir_h| op_read_chunk!(
+        in_dir!(inner, X4_DIR, |dir_h| op_read_chunk!(
             inner, dir_h, name, offset, buf
         ))
     })
 }
 
-pub fn write_in_pulp(sd: &SdStorage, name: &str, data: &[u8]) -> crate::error::Result<()> {
+pub fn write_in_x4(sd: &SdStorage, name: &str, data: &[u8]) -> crate::error::Result<()> {
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_dir!(inner, PULP_DIR, |dir_h| op_write!(inner, dir_h, name, data))
+        in_dir!(inner, X4_DIR, |dir_h| op_write!(inner, dir_h, name, data))
     })
 }
 
-pub fn append_in_pulp(sd: &SdStorage, name: &str, data: &[u8]) -> crate::error::Result<()> {
+pub fn append_in_x4(sd: &SdStorage, name: &str, data: &[u8]) -> crate::error::Result<()> {
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_dir!(inner, PULP_DIR, |dir_h| op_append!(
-            inner, dir_h, name, data
-        ))
+        in_dir!(inner, X4_DIR, |dir_h| op_append!(inner, dir_h, name, data))
     })
 }
 
-pub fn file_size_in_pulp(sd: &SdStorage, name: &str) -> crate::error::Result<u32> {
+pub fn file_size_in_x4(sd: &SdStorage, name: &str) -> crate::error::Result<u32> {
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_dir!(inner, PULP_DIR, |dir_h| op_file_size!(inner, dir_h, name))
+        in_dir!(inner, X4_DIR, |dir_h| op_file_size!(inner, dir_h, name))
     })
 }
 
-pub fn delete_in_pulp(sd: &SdStorage, name: &str) -> crate::error::Result<()> {
+pub fn delete_in_x4(sd: &SdStorage, name: &str) -> crate::error::Result<()> {
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_dir!(inner, PULP_DIR, |dir_h| op_delete!(inner, dir_h, name))
+        in_dir!(inner, X4_DIR, |dir_h| op_delete!(inner, dir_h, name))
     })
 }
 
 // seek+write: open existing file, seek to offset, write data, close
 // used to update the chapter offset table after all chapters are appended
-pub fn write_at_in_pulp(
+pub fn write_at_in_x4(
     sd: &SdStorage,
     name: &str,
     offset: u32,
@@ -676,7 +670,7 @@ pub fn write_at_in_pulp(
     poll_once(async {
         let mut guard = borrow(sd)?;
         let inner = &mut *guard;
-        in_dir!(inner, PULP_DIR, |dir_h| {
+        in_dir!(inner, X4_DIR, |dir_h| {
             match inner
                 .mgr
                 .open_file_in_dir(dir_h, name, Mode::ReadWriteCreateOrAppend)
@@ -702,7 +696,7 @@ pub fn write_at_in_pulp(
 
 // title mapping
 
-// append a title line to _PULP/TITLES.BIN
+// append a title line to _x4/TITLES.BIN
 pub fn save_title(sd: &SdStorage, filename: &str, title: &str) -> crate::error::Result<()> {
     let name_bytes = filename.as_bytes();
     let title_bytes = title.as_bytes();
@@ -721,5 +715,5 @@ pub fn save_title(sd: &SdStorage, filename: &str, title: &str) -> crate::error::
         .copy_from_slice(&title_bytes[..title_len]);
     line[name_bytes.len() + 1 + title_len] = b'\n';
 
-    append_file_in_dir(sd, PULP_DIR, TITLES_FILE, &line[..line_len])
+    append_file_in_dir(sd, X4_DIR, TITLES_FILE, &line[..line_len])
 }
