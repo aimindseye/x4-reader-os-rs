@@ -88,6 +88,7 @@ pub struct HomeApp {
 
     recent_book: [u8; RECENT_BUF_LEN],
     recent_book_len: usize,
+    recent_record: Option<reader_state::RecentBookRecord>,
     needs_load_recent: bool,
 
     bm_entries: Vec<reader_state::BookmarkIndexRecord>,
@@ -114,6 +115,7 @@ impl HomeApp {
             item_count: 4, // updated after load; may include Continue
             recent_book: [0u8; RECENT_BUF_LEN],
             recent_book_len: 0,
+            recent_record: None,
             needs_load_recent: false,
             bm_entries: Vec::new(),
             bm_count: 0,
@@ -185,8 +187,27 @@ impl HomeApp {
         );
     }
 
+    fn clear_recent(&mut self) {
+        self.recent_book_len = 0;
+        self.recent_record = None;
+    }
+
+    fn set_recent_record(&mut self, rec: reader_state::RecentBookRecord) {
+        let path = rec.open_path().trim();
+        if path.is_empty() {
+            self.clear_recent();
+            return;
+        }
+
+        let bytes = path.as_bytes();
+        let n = bytes.len().min(self.recent_book.len());
+        self.recent_book[..n].copy_from_slice(&bytes[..n]);
+        self.recent_book_len = n;
+        self.recent_record = Some(rec);
+    }
+
     fn load_recent_record_from_state(&mut self, k: &mut KernelHandle<'_>) -> bool {
-        let mut buf = [0u8; 160];
+        let mut buf = [0u8; 192];
         let size = match k.read_app_subdir_chunk(
             reader_state::STATE_DIR,
             reader_state::RECENT_RECORD_FILE,
@@ -202,36 +223,63 @@ impl HomeApp {
             Err(_) => return false,
         };
 
-        if text.is_empty() {
+        let Some(rec) = reader_state::RecentBookRecord::decode_line(text) else {
+            log::warn!("phase6: ignored invalid typed recent record");
+            return false;
+        };
+
+        if rec.source_path.trim().is_empty() {
             return false;
         }
 
-        let bytes = text.as_bytes();
-        let n = bytes.len().min(self.recent_book.len());
-        self.recent_book[..n].copy_from_slice(&bytes[..n]);
-        self.recent_book_len = n;
+        log::info!(
+            "phase8: home loaded typed recent book_id={} path={}",
+            rec.book_id.as_str(),
+            rec.open_path()
+        );
+        self.set_recent_record(rec);
         true
     }
 
     fn load_recent_legacy(&mut self, k: &mut KernelHandle<'_>) -> bool {
-        let mut buf = [0u8; 32];
+        let mut buf = [0u8; RECENT_BUF_LEN];
         match k.read_app_data_start(RECENT_FILE, &mut buf) {
             Ok((_, n)) if n > 0 => {
-                let n = n.min(32);
-                self.recent_book[..n].copy_from_slice(&buf[..n]);
-                self.recent_book_len = n;
+                let text = match core::str::from_utf8(&buf[..n.min(buf.len())]) {
+                    Ok(s) => s.trim(),
+                    Err(_) => {
+                        self.clear_recent();
+                        return false;
+                    }
+                };
+
+                if text.is_empty() || text.contains('|') {
+                    // Phase 6: Continue must come from typed state.  Legacy
+                    // fallback is accepted only as a raw path, never as a raw
+                    // encoded recent record leaked into UI/routing.
+                    self.clear_recent();
+                    return false;
+                }
+
+                let rec = reader_state::RecentBookRecord::from_path(text);
+                log::info!(
+                    "phase6: upgraded legacy recent path to typed record book_id={} path={}",
+                    rec.book_id.as_str(),
+                    rec.source_path
+                );
+                self.set_recent_record(rec);
                 true
             }
             _ => {
-                self.recent_book_len = 0;
+                self.clear_recent();
                 false
             }
         }
     }
 
     pub fn load_recent(&mut self, k: &mut KernelHandle<'_>) {
-        if !self.load_recent_record_from_state(k) {
-            let _ = self.load_recent_legacy(k);
+        if !self.load_recent_record_from_state(k) && !self.load_recent_legacy(k) {
+            self.clear_recent();
         }
         self.rebuild_item_count();
         self.refresh_menu_layout();
@@ -239,18 +287,18 @@ impl HomeApp {
     }
 
     fn rebuild_item_count(&mut self) {
-        self.item_count = if self.recent_book_len > 0 { 5 } else { 4 };
+        self.item_count = if self.recent_record.is_some() { 5 } else { 4 };
         if self.selected >= self.item_count {
             self.selected = 0;
         }
     }
 
     fn has_recent(&self) -> bool {
-        self.recent_book_len > 0
+        self.recent_record.is_some() && self.recent_book_len > 0
     }
 
     pub fn recent_book_bytes(&self) -> Option<&[u8]> {
-        if self.recent_book_len > 0 {
+        if self.has_recent() {
             Some(&self.recent_book[..self.recent_book_len])
         } else {
             None
@@ -260,62 +308,29 @@ impl HomeApp {
     pub fn recent_book_str(&self) -> Option<&str> {
         self.recent_book_bytes()
             .and_then(|bytes| core::str::from_utf8(bytes).ok())
-            .filter(|s| !s.is_empty())
+            .filter(|s| !s.trim().is_empty())
     }
 
     pub fn recent_record(&self) -> Option<reader_state::RecentBookRecord> {
-        self.recent_book_str()
-            .and_then(reader_state::RecentBookRecord::decode_line)
+        self.recent_record.clone()
     }
 
     pub fn recent_book_id(&self) -> Option<alloc::string::String> {
-        self.recent_record()
-            .map(|rec| rec.book_id.0)
-            .or_else(|| self.recent_book_str().map(reader_state::fingerprint_path))
+        self.recent_record().map(|rec| rec.book_id.0)
     }
 
     pub fn recent_source_path(&self) -> Option<alloc::string::String> {
-        self.recent_record()
-            .map(|rec| rec.source_path)
-            .or_else(|| self.recent_book_str().map(String::from))
+        self.recent_record().map(|rec| rec.source_path)
     }
 
     fn recent_preview_text(&self) -> Option<String> {
-        if let Some(rec) = self.recent_record() {
-            let title = rec.display_title.trim();
-            if !title.is_empty() {
-                return Some(String::from(title));
-            }
-
-            let path = rec.source_path.trim();
-            if !path.is_empty() {
-                return Some(String::from(Self::basename(path)));
-            }
+        let rec = self.recent_record.as_ref()?;
+        let title = rec.ui_title().trim();
+        if title.is_empty() {
+            None
+        } else {
+            Some(String::from(Self::basename(title)))
         }
-
-        self.recent_book_str().and_then(|raw| {
-            let trimmed = raw.trim();
-            if trimmed.is_empty() {
-                return None;
-            }
-
-            if trimmed.contains('|') {
-                let mut parts = trimmed.split('|');
-                let _ = parts.next();
-                let source_path = parts.next().unwrap_or("").trim();
-                let display_title = parts.next().unwrap_or("").trim();
-
-                if !display_title.is_empty() {
-                    Some(String::from(display_title))
-                } else if !source_path.is_empty() {
-                    Some(String::from(Self::basename(source_path)))
-                } else {
-                    None
-                }
-            } else {
-                Some(String::from(Self::basename(trimmed)))
-            }
-        })
     }
 
     fn basename(path: &str) -> &str {
@@ -542,12 +557,11 @@ impl App<AppId> for HomeApp {
     async fn background(&mut self, ctx: &mut AppContext, k: &mut KernelHandle<'_>) {
         if self.needs_load_recent {
             let old_count = self.item_count;
-            if !self.load_recent_record_from_state(k) {
-                let _ = self.load_recent_legacy(k);
+            if !self.load_recent_record_from_state(k) && !self.load_recent_legacy(k) {
+                self.clear_recent();
             }
             self.rebuild_item_count();
             self.needs_load_recent = false;
-            self.item_count = if self.recent_book_len > 0 { 5 } else { 4 };
             self.refresh_menu_layout();
             if self.item_count != old_count {
                 ctx.request_full_redraw();
@@ -626,11 +640,17 @@ impl HomeApp {
             ActionEvent::Press(Action::Select) => match self.item_action(self.selected) {
                 MenuAction::Continue => {
                     if let Some(rec) = self.recent_record() {
-                        ctx.set_message(rec.source_path.as_bytes());
-                    } else if self.has_recent() {
-                        ctx.set_message(&self.recent_book[..self.recent_book_len]);
+                        log::info!(
+                            "phase8: continue from typed recent book_id={} path={}",
+                            rec.book_id.as_str(),
+                            rec.open_path()
+                        );
+                        ctx.set_message(rec.open_path().as_bytes());
+                        Transition::Push(AppId::Reader)
+                    } else {
+                        log::warn!("phase6: Continue selected without typed recent record");
+                        Transition::None
                     }
-                    Transition::Push(AppId::Reader)
                 }
                 MenuAction::Push(app) => Transition::Push(app),
                 MenuAction::OpenBookmarks => {
